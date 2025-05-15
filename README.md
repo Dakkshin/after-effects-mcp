@@ -1,5 +1,6 @@
 # 🎬 After Effects MCP Server
 
+[![smithery badge](https://smithery.ai/badge/@Dakkshin/after-effects-mcp)](https://smithery.ai/server/@Dakkshin/after-effects-mcp)
 ![Node.js](https://img.shields.io/badge/node-%3E=14.x-brightgreen.svg)
 ![Build](https://img.shields.io/badge/build-passing-success)
 ![License](https://img.shields.io/github/license/yourusername/after-effects-mcp)
@@ -57,6 +58,16 @@
 - npm or yarn package manager
 
 ### 📥 Installation
+
+#### Installing via Smithery
+
+To install After Effects MCP Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@Dakkshin/after-effects-mcp):
+
+```bash
+npx -y @smithery/cli install @Dakkshin/after-effects-mcp --client claude
+```
+
+#### Installing Manually
 
 1. **Clone the repository**
    ```bash
