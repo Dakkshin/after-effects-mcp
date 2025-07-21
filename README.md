@@ -2,7 +2,7 @@
 
 ![Node.js](https://img.shields.io/badge/node-%3E=14.x-brightgreen.svg)
 ![Build](https://img.shields.io/badge/build-passing-success)
-![License](https://img.shields.io/github/license/yourusername/after-effects-mcp)
+![License](https://img.shields.io/github/license/Dakkshin/after-effects-mcp)
 ![Platform](https://img.shields.io/badge/platform-after%20effects-blue)
 
 ✨ A Model Context Protocol (MCP) server for Adobe After Effects that enables AI assistants and other applications to control After Effects through a standardized protocol.
