@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/dakkshin-after-effects-mcp-badge.png)](https://mseep.ai/app/dakkshin-after-effects-mcp)
+
 # 🎬 After Effects MCP Server
 
 ![Node.js](https://img.shields.io/badge/node-%3E=14.x-brightgreen.svg)
