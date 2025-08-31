@@ -9,40 +9,50 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Possible After Effects installation paths (common locations)
+// Possible After Effects installation paths for macOS
 const possiblePaths = [
-  'C:\\Program Files\\Adobe\\Adobe After Effects 2025',
-  'C:\\Program Files\\Adobe\\Adobe After Effects 2024',
-  'C:\\Program Files\\Adobe\\Adobe After Effects 2023',
-  'C:\\Program Files\\Adobe\\Adobe After Effects 2022',
-  'C:\\Program Files\\Adobe\\Adobe After Effects 2021'
+  '/Applications/Adobe After Effects 2025/Adobe After Effects 2025.app',
+  '/Applications/Adobe After Effects 2024/Adobe After Effects 2024.app',
+  '/Applications/Adobe After Effects 2023/Adobe After Effects 2023.app',
+  '/Applications/Adobe After Effects 2022/Adobe After Effects 2022.app',
+  '/Applications/Adobe After Effects 2021/Adobe After Effects 2021.app'
 ];
 
 // Find valid After Effects installation
 let afterEffectsPath = null;
 for (const testPath of possiblePaths) {
   if (fs.existsSync(testPath)) {
-    afterEffectsPath = testPath;
+    // Extract the base directory from the .app path
+    afterEffectsPath = path.dirname(testPath);
     break;
   }
 }
 
 if (!afterEffectsPath) {
   console.error('Error: Could not find After Effects installation.');
-  console.error('Please manually copy the bridge script to your After Effects ScriptUI Panels folder.');
-  console.error('Source: build/scripts/mcp-bridge-auto.jsx');
-  console.error('Target: C:\\Program Files\\Adobe\\Adobe After Effects [VERSION]\\Support Files\\Scripts\\ScriptUI Panels\\');
+  console.error('Please manually copy the bridge script and json2.js to your After Effects ScriptUI Panels folder.');
+  console.error('Source: build/scripts/mcp-bridge-auto.jsx and build/scripts/json2.js');
+  console.error('Target: /Applications/Adobe After Effects [VERSION]/Scripts/ScriptUI Panels/');
   process.exit(1);
 }
 
-// Define source and destination paths
+// Define source and destination paths for macOS
 const sourceScript = path.join(__dirname, 'build', 'scripts', 'mcp-bridge-auto.jsx');
-const destinationFolder = path.join(afterEffectsPath, 'Support Files', 'Scripts', 'ScriptUI Panels');
+const sourceJson2 = path.join(__dirname, 'build', 'scripts', 'json2.js');
+const destinationFolder = path.join(afterEffectsPath, 'Scripts', 'ScriptUI Panels');
 const destinationScript = path.join(destinationFolder, 'mcp-bridge-auto.jsx');
+const destinationJson2 = path.join(destinationFolder, 'json2.js');
 
 // Ensure source script exists
 if (!fs.existsSync(sourceScript)) {
   console.error(`Error: Source script not found at ${sourceScript}`);
+  console.error('Please run "npm run build" first to generate the script.');
+  process.exit(1);
+}
+
+// Ensure json2.js exists
+if (!fs.existsSync(sourceJson2)) {
+  console.error(`Error: json2.js not found at ${sourceJson2}`);
   console.error('Please run "npm run build" first to generate the script.');
   process.exit(1);
 }
@@ -53,26 +63,33 @@ if (!fs.existsSync(destinationFolder)) {
     fs.mkdirSync(destinationFolder, { recursive: true });
   } catch (error) {
     console.error(`Error creating destination folder: ${error.message}`);
-    console.error('You may need administrative privileges to install the script.');
     process.exit(1);
   }
 }
 
-// Copy the script with elevated privileges (for Windows)
+// Copy the script using cp command (macOS/Linux)
 try {
   console.log(`Installing bridge script to ${destinationScript}...`);
+  console.log(`Installing json2.js to ${destinationJson2}...`);
   
-  // Try to use PowerShell with elevated privileges on Windows
-  const command = `
-    Start-Process PowerShell -Verb RunAs -ArgumentList "-Command Copy-Item -Path '${sourceScript.replace(/\\/g, '\\\\')}' -Destination '${destinationScript.replace(/\\/g, '\\\\')}' -Force"
-  `;
+  // Try regular copy first, then sudo if permission denied
+  try {
+    execSync(`sudo cp "${sourceScript}" "${destinationScript}"`, { stdio: 'inherit' });
+    execSync(`sudo cp "${sourceJson2}" "${destinationJson2}"`, { stdio: 'inherit' });
+  } catch (copyError) {
+    if (copyError.message.includes('Permission denied') || copyError.message.includes('EACCES')) {
+      console.log('Permission denied, trying with sudo...');
+      execSync(`sudo cp "${sourceScript}" "${destinationScript}"`, { stdio: 'inherit' });
+      execSync(`sudo cp "${sourceJson2}" "${destinationJson2}"`, { stdio: 'inherit' });
+    } else {
+      throw copyError;
+    }
+  }
   
-  execSync(`powershell -Command "${command}"`, { stdio: 'inherit' });
-  
-  console.log('Bridge script installed successfully!');
+  console.log('Bridge script and json2.js installed successfully!');
   console.log('\nImportant next steps:');
   console.log('1. Open After Effects');
-  console.log('2. Go to Edit > Preferences > Scripting & Expressions');
+  console.log('2. Go to After Effects > Preferences > Scripting & Expressions');
   console.log('3. Enable "Allow Scripts to Write Files and Access Network"');
   console.log('4. Restart After Effects');
   console.log('5. Open the bridge panel: Window > mcp-bridge-auto.jsx');
@@ -81,6 +98,7 @@ try {
   console.error('\nPlease try manual installation:');
   console.error(`1. Copy: ${sourceScript}`);
   console.error(`2. To: ${destinationScript}`);
-  console.error('3. You may need to run as administrator or use File Explorer with admin rights');
+  console.error(`3. Copy: ${sourceJson2}`);
+  console.error(`4. To: ${destinationJson2}`);
   process.exit(1);
 } 

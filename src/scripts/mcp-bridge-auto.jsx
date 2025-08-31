@@ -1,6 +1,10 @@
 // mcp-bridge-auto.jsx
 // Auto-running MCP Bridge panel for After Effects
 
+// Include JSON2 library for After Effects (since it doesn't have built-in JSON support)
+// Source: https://gist.github.com/atheken/654510
+#include "json2.js"
+
 // Remove #include directives as we define functions below
 /*
 #include "createComposition.jsx"
@@ -835,13 +839,17 @@ var isChecking = false;
 
 // Command file path
 function getCommandFilePath() {
-    var tempFolder = Folder.temp;
+    // Use the same temp directory as the MCP server
+    var projectFolder = new Folder($.fileName).parent.parent.parent;
+    var tempFolder = new Folder(projectFolder.fsName + "/build/temp");
     return tempFolder.fsName + "/ae_command.json";
 }
 
 // Result file path
 function getResultFilePath() {
-    var tempFolder = Folder.temp;
+    // Use the same temp directory as the MCP server
+    var projectFolder = new Folder($.fileName).parent.parent.parent;
+    var tempFolder = new Folder(projectFolder.fsName + "/build/temp");
     return tempFolder.fsName + "/ae_mcp_result.json";
 }
 
