@@ -12,25 +12,27 @@
 </a>
 
 ## Table of Contents
-- [Features](#features)
-  - [Core Composition Features](#core-composition-features)
-  - [Layer Management](#layer-management)
-  - [Animation Capabilities](#animation-capabilities)
-- [Setup Instructions](#setup-instructions)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
-  - [Update MCP Config](#Update-MCP-Config)
-  - [Running the Server](#running-the-server)
-- [Usage Guide](#usage-guide)
-  - [Creating Compositions](#creating-compositions)
-  - [Working with Layers](#working-with-layers)
-  - [Animation](#animation)
-- [Available MCP Tools](#available-mcp-tools)
-- [For Developers](#for-developers)
-  - [Project Structure](#project-structure)
-  - [Building the Project](#building-the-project)
-  - [Contributing](#contributing)
-- [License](#license)
+- [🎬 After Effects MCP Server](#-after-effects-mcp-server)
+  - [Table of Contents](#table-of-contents)
+  - [📦 Features](#-features)
+    - [🎥 Core Composition Features](#-core-composition-features)
+    - [🧱 Layer Management](#-layer-management)
+    - [🌀 Animation Capabilities](#-animation-capabilities)
+  - [⚙️ Setup Instructions](#️-setup-instructions)
+    - [🛠 Prerequisites](#-prerequisites)
+    - [📥 Installation](#-installation)
+    - [🔧 Update MCP Config](#-update-mcp-config)
+    - [▶️ Running the Server](#️-running-the-server)
+  - [🚀 Usage Guide](#-usage-guide)
+    - [📘 Creating Compositions](#-creating-compositions)
+    - [✍️ Working with Layers](#️-working-with-layers)
+    - [🕹 Animation](#-animation)
+  - [🛠 Available MCP Tools](#-available-mcp-tools)
+  - [👨‍💻 For Developers](#-for-developers)
+    - [🧩 Project Structure](#-project-structure)
+    - [📦 Building the Project](#-building-the-project)
+    - [🤝 Contributing](#-contributing)
+  - [License](#license)
 
 ## 📦 Features
 
@@ -85,6 +87,8 @@
    yarn install-bridge
    ```
    This will copy the necessary scripts to your After Effects installation.
+
+> **Note:** On macOS, you may need to run the install command with sudo due to permission requirements:
 
 ### 🔧 Update MCP Config
 

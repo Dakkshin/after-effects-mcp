@@ -5,7 +5,7 @@
   "main": "build/index.js",
   "type": "module",
   "scripts": {
-    "build": "tsc && xcopy .\\src\\scripts .\\build\\scripts /E /I /Y",
+    "build": "node build-scripts.js",
     "start": "node build/index.js",
     "install-bridge": "node install-bridge.js",
     "postinstall": "npm run build"
