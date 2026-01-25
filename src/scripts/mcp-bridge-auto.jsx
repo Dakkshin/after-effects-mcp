@@ -868,6 +868,10 @@ if (typeof JSON.stringify !== "function") {
     })();
 }
 
+// Detect AE version (AE 2025 = version 25.x, AE 2026 = version 26.x)
+var aeVersion = parseFloat(app.version);
+var isAE2025OrLater = aeVersion >= 25.0;
+
 // Always create a floating palette window for AE 2025+
 var panel = new Window("palette", "MCP Bridge Auto", undefined);
 panel.orientation = "column";
@@ -900,16 +904,24 @@ autoRunCheckbox.value = true;
 var checkInterval = 2000;
 var isChecking = false;
 
-// Command file path
+// Command file path - use Documents folder for reliable access
 function getCommandFilePath() {
-    var tempFolder = Folder.temp;
-    return tempFolder.fsName + "/ae_command.json";
+    var userFolder = Folder.myDocuments;
+    var bridgeFolder = new Folder(userFolder.fsName + "/ae-mcp-bridge");
+    if (!bridgeFolder.exists) {
+        bridgeFolder.create();
+    }
+    return bridgeFolder.fsName + "/ae_command.json";
 }
 
-// Result file path
+// Result file path - use Documents folder for reliable access
 function getResultFilePath() {
-    var tempFolder = Folder.temp;
-    return tempFolder.fsName + "/ae_mcp_result.json";
+    var userFolder = Folder.myDocuments;
+    var bridgeFolder = new Folder(userFolder.fsName + "/ae-mcp-bridge");
+    if (!bridgeFolder.exists) {
+        bridgeFolder.create();
+    }
+    return bridgeFolder.fsName + "/ae_mcp_result.json";
 }
 
 // Functions for each script type
@@ -1275,6 +1287,7 @@ checkButton.onClick = function() {
 
 // Log startup
 logToPanel("MCP Bridge Auto started");
+logToPanel("Command file: " + getCommandFilePath());
 statusText.text = "Ready - Auto-run is " + (autoRunCheckbox.value ? "ON" : "OFF");
 
 // Start the command checker

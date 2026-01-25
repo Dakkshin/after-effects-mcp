@@ -5,7 +5,7 @@
   "main": "build/index.js",
   "type": "module",
   "scripts": {
-    "build": "tsc && xcopy .\\src\\scripts .\\build\\scripts /E /I /Y",
+    "build": "tsc && copyfiles -u 1 \"src/scripts/**/*\" build",
     "start": "node build/index.js",
     "install-bridge": "node install-bridge.js",
     "postinstall": "npm run build"
@@ -17,6 +17,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.17.30",
+    "copyfiles": "^2.4.1",
     "typescript": "^5.2.2"
   }
 }
