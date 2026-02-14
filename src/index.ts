@@ -1,6 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { execSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -19,7 +18,6 @@ const __dirname = path.dirname(__filename);
 
 // Define paths
 const SCRIPTS_DIR = path.join(__dirname, "scripts");
-const TEMP_DIR = path.join(__dirname, "temp");
 
 // Get the correct directory for AE bridge files
 // Use ~/Documents/ae-mcp-bridge for reliable cross-process access
@@ -526,10 +524,16 @@ server.tool(
   },
   async (params) => {
     try {
-      // Generate a unique timestamp
+      // Use the same bridge directory for cross-platform compatibility
+      const bridgeDir = getAETempDir();
       const timestamp = new Date().getTime();
-      const tempFile = path.join(process.env.TEMP || process.env.TMP || os.tmpdir(), `ae_test_${timestamp}.jsx`);
-      
+      const tempFile = path.join(bridgeDir, `ae_test_${timestamp}.jsx`);
+
+      // Build ExtendScript-compatible path to the bridge directory
+      // ExtendScript uses Folder.myDocuments for cross-platform Documents access
+      const resultFileScript = 'Folder.myDocuments.fsName + "/ae-mcp-bridge/ae_test_result.txt"';
+      const errorFileScript = 'Folder.myDocuments.fsName + "/ae-mcp-bridge/ae_test_error.txt"';
+
       // Create a direct test script that doesn't rely on command files
       let scriptContent = "";
       if (params.operation === "keyframe") {
@@ -541,25 +545,24 @@ server.tool(
             var prop = layer.property("Transform").property("Opacity");
             var time = 1; // 1 second
             var value = 25; // 25% opacity
-            
+
             // Set a keyframe
             prop.setValueAtTime(time, value);
-            
+
             // Write direct result
-            var resultFile = new File("${path.join(process.env.TEMP || process.env.TMP || os.tmpdir(), 'ae_test_result.txt').replace(/\\/g, '\\\\')}");
+            var resultFile = new File(${resultFileScript});
             resultFile.open("w");
             resultFile.write("SUCCESS: Added keyframe at time " + time + " with value " + value);
             resultFile.close();
-            
-            // Visual feedback
-            alert("Test successful: Added opacity keyframe at " + time + "s with value " + value + "%");
+
+            $.writeln("Test successful: Added opacity keyframe at " + time + "s with value " + value + "%");
           } catch (e) {
-            var errorFile = new File("${path.join(process.env.TEMP || process.env.TMP || os.tmpdir(), 'ae_test_error.txt').replace(/\\/g, '\\\\')}");
+            var errorFile = new File(${errorFileScript});
             errorFile.open("w");
             errorFile.write("ERROR: " + e.toString());
             errorFile.close();
-            
-            alert("Test failed: " + e.toString());
+
+            $.writeln("Test failed: " + e.toString());
           }
         `;
       } else if (params.operation === "expression") {
@@ -570,33 +573,32 @@ server.tool(
             var layer = comp.layers[${params.layerIndex}];
             var prop = layer.property("Transform").property("Position");
             var expression = "wiggle(3, 30)";
-            
+
             // Set the expression
             prop.expression = expression;
-            
+
             // Write direct result
-            var resultFile = new File("${path.join(process.env.TEMP || process.env.TMP || os.tmpdir(), 'ae_test_result.txt').replace(/\\/g, '\\\\')}");
+            var resultFile = new File(${resultFileScript});
             resultFile.open("w");
             resultFile.write("SUCCESS: Added expression: " + expression);
             resultFile.close();
-            
-            // Visual feedback
-            alert("Test successful: Added position expression: " + expression);
+
+            $.writeln("Test successful: Added position expression: " + expression);
           } catch (e) {
-            var errorFile = new File("${path.join(process.env.TEMP || process.env.TMP || os.tmpdir(), 'ae_test_error.txt').replace(/\\/g, '\\\\')}");
+            var errorFile = new File(${errorFileScript});
             errorFile.open("w");
             errorFile.write("ERROR: " + e.toString());
             errorFile.close();
-            
-            alert("Test failed: " + e.toString());
+
+            $.writeln("Test failed: " + e.toString());
           }
         `;
       }
-      
-      // Write the script to a temp file
+
+      // Write the script to the bridge directory
       fs.writeFileSync(tempFile, scriptContent);
       console.error(`Written test script to: ${tempFile}`);
-      
+
       // Tell the user what to do
       return {
         content: [
@@ -607,7 +609,7 @@ server.tool(
 Please run this script manually in After Effects:
 1. In After Effects, go to File > Scripts > Run Script File...
 2. Navigate to: ${tempFile}
-3. You should see an alert confirming the result.
+3. Check the ExtendScript console for results.
 
 This bypasses the MCP Bridge Auto panel and will directly modify the specified layer.`
           }
@@ -944,7 +946,7 @@ server.tool(
 async function main() {
   console.error("After Effects MCP Server starting...");
   console.error(`Scripts directory: ${SCRIPTS_DIR}`);
-  console.error(`Temp directory: ${TEMP_DIR}`);
+  console.error(`Bridge directory: ${getAETempDir()}`);
   
   const transport = new StdioServerTransport();
   await server.connect(transport);

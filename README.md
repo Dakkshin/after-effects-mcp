@@ -3,7 +3,7 @@
 ![Node.js](https://img.shields.io/badge/node-%3E=14.x-brightgreen.svg)
 ![Build](https://img.shields.io/badge/build-passing-success)
 ![License](https://img.shields.io/github/license/Dakkshin/after-effects-mcp)
-![Platform](https://img.shields.io/badge/platform-after%20effects-blue)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)
 
 ✨ A Model Context Protocol (MCP) server for Adobe After Effects that enables AI assistants and other applications to control After Effects through a standardized protocol.
 
@@ -86,16 +86,31 @@
    ```
    This will copy the necessary scripts to your After Effects installation.
 
+   > **macOS note:** You may need to run with `sudo` if the installer cannot write to the After Effects application directory.
+
 ### 🔧 Update MCP Config
 
-Go to your client (eg. Claude or Cursor ) and update your config file
+Go to your client (eg. Claude or Cursor) and update your config file.
 
+**macOS:**
 ```json
 {
   "mcpServers": {
     "AfterEffectsMCP": {
       "command": "node",
-      "args": ["C:\\Users\\Dakkshin\\after-effects-mcp\\build\\index.js"]
+      "args": ["/Users/<your-username>/after-effects-mcp/build/index.js"]
+    }
+  }
+}
+```
+
+**Windows:**
+```json
+{
+  "mcpServers": {
+    "AfterEffectsMCP": {
+      "command": "node",
+      "args": ["C:\\Users\\<your-username>\\after-effects-mcp\\build\\index.js"]
     }
   }
 }
@@ -112,7 +127,13 @@ Go to your client (eg. Claude or Cursor ) and update your config file
 
 2. **Open After Effects**
 
-3. **Open the MCP Bridge Auto panel**
+3. **Enable scripting in After Effects**
+   - **macOS:** After Effects > Settings > Scripting & Expressions
+   - **Windows:** Edit > Preferences > Scripting & Expressions
+   - Enable "Allow Scripts to Write Files and Access Network"
+   - Restart After Effects
+
+4. **Open the MCP Bridge Auto panel**
    - In After Effects, go to Window > mcp-bridge-auto.jsx
    - The panel will automatically check for commands every few seconds
    - Make sure the "Auto-run commands" checkbox is enabled
