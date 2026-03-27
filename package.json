@@ -5,19 +5,20 @@
   "main": "build/index.js",
   "type": "module",
   "scripts": {
-    "build": "tsc && copyfiles -u 1 \"src/scripts/**/*\" build",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=build/index.js --packages=external && copyfiles -u 1 \"src/scripts/**/*\" build",
     "start": "node build/index.js",
     "install-bridge": "node install-bridge.js",
     "postinstall": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.28.0",
     "node-fetch": "^3.3.2",
     "zod": "^3.22.2"
   },
   "devDependencies": {
     "@types/node": "^20.17.30",
     "copyfiles": "^2.4.1",
+    "esbuild": "^0.27.4",
     "typescript": "^5.2.2"
   }
 }

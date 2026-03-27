@@ -141,7 +141,47 @@ function createShapeLayer(args) {
     }
 }
 
-// --- createSolidLayer (from createSolidLayer.jsx) --- 
+// --- createCamera ---
+function createCamera(args) {
+    try {
+        var compName = args.compName || "";
+        var name = args.name || "Camera";
+        var zoom = args.zoom || 1777.78; // Default ~50mm equivalent
+        var position = args.position; // Optional [x, y, z]
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        var cameraLayer = comp.layers.addCamera(name, [comp.width / 2, comp.height / 2]);
+        cameraLayer.property("Camera Options").property("Zoom").setValue(zoom);
+
+        if (position !== undefined && position !== null) {
+            cameraLayer.property("Position").setValue(position);
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Camera created successfully",
+            layer: {
+                name: cameraLayer.name,
+                index: cameraLayer.index,
+                zoom: cameraLayer.property("Camera Options").property("Zoom").value,
+                position: cameraLayer.property("Position").value
+            }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- createSolidLayer (from createSolidLayer.jsx) ---
 function createSolidLayer(args) {
     try {
         var compName = args.compName || "";
@@ -285,6 +325,8 @@ function setLayerProperties(args) {
         }
 
         // --- General Property Handling ---
+        var threeDLayer = args.threeDLayer;
+        if (threeDLayer !== undefined && threeDLayer !== null) { layer.threeDLayer = !!threeDLayer; changedProperties.push("threeDLayer"); }
         if (position !== undefined && position !== null) { layer.property("Position").setValue(position); changedProperties.push("position"); }
         if (scale !== undefined && scale !== null) { layer.property("Scale").setValue(scale); changedProperties.push("scale"); }
         if (rotation !== undefined && rotation !== null) {
@@ -308,6 +350,7 @@ function setLayerProperties(args) {
         var returnLayerInfo = {
             name: layer.name,
             index: layer.index,
+            threeDLayer: layer.threeDLayer,
             position: layer.property("Position").value,
             scale: layer.property("Scale").value,
             rotation: layer.threeDLayer ? layer.property("Z Rotation").value : layer.property("Rotation").value, // Return appropriate rotation
@@ -1120,6 +1163,11 @@ function executeCommand(command, args) {
                 logToPanel("Calling bridgeTestEffects function...");
                 result = bridgeTestEffects(args);
                 logToPanel("Returned from bridgeTestEffects.");
+                break;
+            case "createCamera":
+                logToPanel("Calling createCamera function...");
+                result = createCamera(args);
+                logToPanel("Returned from createCamera.");
                 break;
             default:
                 result = JSON.stringify({ error: "Unknown command: " + command });

@@ -166,7 +166,7 @@ server.tool(
   "Run a read-only script in After Effects",
   {
     script: z.string().describe("Name of the predefined script to run"),
-    parameters: z.record(z.any()).optional().describe("Optional parameters for the script")
+    parameters: z.record(z.string(), z.unknown()).optional().describe("Optional parameters for the script")
   },
   async ({ script, parameters = {} }) => {
     // Validate that script is safe (only allow predefined scripts)
@@ -184,7 +184,8 @@ server.tool(
       "applyEffect",
       "applyEffectTemplate",
       "test-animation",
-      "bridgeTestEffects"
+      "bridgeTestEffects",
+      "createCamera"
     ];
     
     if (!allowedScripts.includes(script)) {
@@ -435,7 +436,7 @@ const LayerIdentifierSchema = {
 
 // Zod schema for keyframe value (more specific types might be needed depending on property)
 // Using z.any() for flexibility, but can be refined (e.g., z.array(z.number()) for position/scale)
-const KeyframeValueSchema = z.any().describe("The value for the keyframe (e.g., [x,y] for Position, [w,h] for Scale, angle for Rotation, percentage for Opacity)");
+const KeyframeValueSchema = z.unknown().describe("The value for the keyframe (e.g., [x,y] for Position, [w,h] for Scale, angle for Rotation, percentage for Opacity)");
 
 // Tool for setting a layer keyframe
 server.tool(
@@ -641,7 +642,7 @@ server.tool(
     effectMatchName: z.string().optional().describe("After Effects internal name for the effect (more reliable, e.g., 'ADBE Gaussian Blur 2')."),
     effectCategory: z.string().optional().describe("Optional category for filtering effects."),
     presetPath: z.string().optional().describe("Optional path to an effect preset file (.ffx)."),
-    effectSettings: z.record(z.any()).optional().describe("Optional parameters for the effect (e.g., { 'Blurriness': 25 }).")
+    effectSettings: z.record(z.string(), z.unknown()).optional().describe("Optional parameters for the effect (e.g., { 'Blurriness': 25 }).")
   },
   async (parameters) => {
     try {
@@ -689,7 +690,7 @@ server.tool(
       "cinematic-look",
       "text-pop"
     ]).describe("Name of the effect template to apply."),
-    customSettings: z.record(z.any()).optional().describe("Optional custom settings to override defaults.")
+    customSettings: z.record(z.string(), z.unknown()).optional().describe("Optional custom settings to override defaults.")
   },
   async (parameters) => {
     try {
@@ -730,7 +731,7 @@ server.tool(
     layerIndex: z.number().int().positive().describe("1-based index of the target layer within the composition."),
     effectName: z.string().optional().describe("Display name of the effect to apply (e.g., 'Gaussian Blur')."),
     effectMatchName: z.string().optional().describe("After Effects internal name for the effect (more reliable, e.g., 'ADBE Gaussian Blur 2')."),
-    effectSettings: z.record(z.any()).optional().describe("Optional parameters for the effect (e.g., { 'Blurriness': 25 }).")
+    effectSettings: z.record(z.string(), z.unknown()).optional().describe("Optional parameters for the effect (e.g., { 'Blurriness': 25 }).")
   },
   async (parameters) => {
     try {
@@ -783,7 +784,7 @@ server.tool(
       "cinematic-look",
       "text-pop"
     ]).describe("Name of the effect template to apply."),
-    customSettings: z.record(z.any()).optional().describe("Optional custom settings to override defaults.")
+    customSettings: z.record(z.string(), z.unknown()).optional().describe("Optional custom settings to override defaults.")
   },
   async (parameters) => {
     try {
