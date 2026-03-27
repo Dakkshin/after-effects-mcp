@@ -327,7 +327,12 @@ function setLayerProperties(args) {
         // --- General Property Handling ---
         var threeDLayer = args.threeDLayer;
         if (threeDLayer !== undefined && threeDLayer !== null) { layer.threeDLayer = !!threeDLayer; changedProperties.push("threeDLayer"); }
-        if (position !== undefined && position !== null) { layer.property("Position").setValue(position); changedProperties.push("position"); }
+        if (position !== undefined && position !== null) {
+            var posProp = layer.property("Position");
+            if (posProp.numKeys > 0) { while (posProp.numKeys > 0) { posProp.removeKey(1); } }
+            posProp.setValue(position);
+            changedProperties.push("position");
+        }
         if (scale !== undefined && scale !== null) { layer.property("Scale").setValue(scale); changedProperties.push("scale"); }
         if (rotation !== undefined && rotation !== null) {
             if (layer.threeDLayer) { 
@@ -379,6 +384,74 @@ function setLayerProperties(args) {
         }, null, 2);
     } catch (error) {
         // Error handling remains similar, but add more specific checks if needed
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- batchSetLayerProperties: apply properties to multiple layers in one call ---
+function batchSetLayerProperties(args) {
+    try {
+        var compName = args.compName || "";
+        var operations = args.operations; // Array of {layerIndex, threeDLayer, position, scale, rotation, opacity, ...}
+
+        if (!operations || !operations.length) {
+            throw new Error("No operations provided. Pass an array of {layerIndex, ...properties}");
+        }
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        var results = [];
+        for (var o = 0; o < operations.length; o++) {
+            var op = operations[o];
+            var layer = null;
+            if (op.layerIndex !== undefined && op.layerIndex !== null) {
+                if (op.layerIndex > 0 && op.layerIndex <= comp.numLayers) { layer = comp.layer(op.layerIndex); }
+                else { results.push({ layerIndex: op.layerIndex, status: "error", message: "Layer index out of bounds" }); continue; }
+            } else if (op.layerName) {
+                for (var j = 1; j <= comp.numLayers; j++) {
+                    if (comp.layer(j).name === op.layerName) { layer = comp.layer(j); break; }
+                }
+            }
+            if (!layer) { results.push({ layerIndex: op.layerIndex, layerName: op.layerName, status: "error", message: "Layer not found" }); continue; }
+
+            var changed = [];
+            if (op.threeDLayer !== undefined && op.threeDLayer !== null) { layer.threeDLayer = !!op.threeDLayer; changed.push("threeDLayer"); }
+            if (op.position !== undefined && op.position !== null) {
+                var posProp = layer.property("Position");
+                if (posProp.numKeys > 0) {
+                    while (posProp.numKeys > 0) { posProp.removeKey(1); }
+                }
+                posProp.setValue(op.position);
+                changed.push("position");
+            }
+            if (op.scale !== undefined && op.scale !== null) { layer.property("Scale").setValue(op.scale); changed.push("scale"); }
+            if (op.rotation !== undefined && op.rotation !== null) {
+                if (layer.threeDLayer) { layer.property("Z Rotation").setValue(op.rotation); }
+                else { layer.property("Rotation").setValue(op.rotation); }
+                changed.push("rotation");
+            }
+            if (op.opacity !== undefined && op.opacity !== null) { layer.property("Opacity").setValue(op.opacity); changed.push("opacity"); }
+
+            results.push({
+                layerIndex: layer.index,
+                name: layer.name,
+                status: "success",
+                threeDLayer: layer.threeDLayer,
+                position: layer.property("Position").value,
+                changedProperties: changed
+            });
+        }
+
+        return JSON.stringify({ status: "success", results: results }, null, 2);
+    } catch (error) {
         return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
     }
 }
@@ -1083,6 +1156,8 @@ function getLayerInfo() {
             name: layer.name,
             enabled: layer.enabled,
             locked: layer.locked,
+            threeDLayer: layer.threeDLayer,
+            position: layer.property("Position").value,
             inPoint: layer.inPoint,
             outPoint: layer.outPoint
         };
@@ -1168,6 +1243,11 @@ function executeCommand(command, args) {
                 logToPanel("Calling createCamera function...");
                 result = createCamera(args);
                 logToPanel("Returned from createCamera.");
+                break;
+            case "batchSetLayerProperties":
+                logToPanel("Calling batchSetLayerProperties function...");
+                result = batchSetLayerProperties(args);
+                logToPanel("Returned from batchSetLayerProperties.");
                 break;
             default:
                 result = JSON.stringify({ error: "Unknown command: " + command });
