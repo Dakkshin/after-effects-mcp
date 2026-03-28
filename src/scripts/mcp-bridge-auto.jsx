@@ -148,6 +148,8 @@ function createCamera(args) {
         var name = args.name || "Camera";
         var zoom = args.zoom || 1777.78; // Default ~50mm equivalent
         var position = args.position; // Optional [x, y, z]
+        var pointOfInterest = args.pointOfInterest; // Optional [x, y, z]
+        var oneNode = args.oneNode || false; // If true, create a one-node camera (no point of interest)
 
         var comp = null;
         for (var i = 1; i <= app.project.numItems; i++) {
@@ -159,22 +161,37 @@ function createCamera(args) {
             else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
         }
 
-        var cameraLayer = comp.layers.addCamera(name, [comp.width / 2, comp.height / 2]);
+        var centerPoint = [comp.width / 2, comp.height / 2];
+        var cameraLayer = comp.layers.addCamera(name, centerPoint);
         cameraLayer.property("Camera Options").property("Zoom").setValue(zoom);
+
+        if (oneNode) {
+            cameraLayer.autoOrient = AutoOrientType.NO_AUTO_ORIENT;
+        }
 
         if (position !== undefined && position !== null) {
             cameraLayer.property("Position").setValue(position);
         }
 
+        if (pointOfInterest !== undefined && pointOfInterest !== null && !oneNode) {
+            cameraLayer.property("Point of Interest").setValue(pointOfInterest);
+        }
+
+        var result = {
+            name: cameraLayer.name,
+            index: cameraLayer.index,
+            zoom: cameraLayer.property("Camera Options").property("Zoom").value,
+            position: cameraLayer.property("Position").value,
+            oneNode: oneNode
+        };
+        if (!oneNode) {
+            result.pointOfInterest = cameraLayer.property("Point of Interest").value;
+        }
+
         return JSON.stringify({
             status: "success",
             message: "Camera created successfully",
-            layer: {
-                name: cameraLayer.name,
-                index: cameraLayer.index,
-                zoom: cameraLayer.property("Camera Options").property("Zoom").value,
-                position: cameraLayer.property("Position").value
-            }
+            layer: result
         }, null, 2);
     } catch (error) {
         return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
@@ -439,6 +456,8 @@ function batchSetLayerProperties(args) {
                 changed.push("rotation");
             }
             if (op.opacity !== undefined && op.opacity !== null) { layer.property("Opacity").setValue(op.opacity); changed.push("opacity"); }
+            if (op.startTime !== undefined && op.startTime !== null) { layer.startTime = op.startTime; changed.push("startTime"); }
+            if (op.outPoint !== undefined && op.outPoint !== null) { layer.outPoint = op.outPoint; changed.push("outPoint"); }
 
             results.push({
                 layerIndex: layer.index,
@@ -1040,6 +1059,35 @@ function getResultFilePath() {
     return bridgeFolder.fsName + "/ae_mcp_result.json";
 }
 
+// --- setCompositionProperties: set duration, frameRate, etc. on active or named comp ---
+function setCompositionProperties(args) {
+    try {
+        var compName = args.compName || "";
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+        var changed = [];
+        if (args.duration !== undefined && args.duration !== null) { comp.duration = args.duration; changed.push("duration"); }
+        if (args.frameRate !== undefined && args.frameRate !== null) { comp.frameRate = args.frameRate; changed.push("frameRate"); }
+        if (args.width !== undefined && args.width !== null && args.height !== undefined && args.height !== null) {
+            comp.width = args.width; comp.height = args.height; changed.push("dimensions");
+        }
+        return JSON.stringify({
+            status: "success",
+            composition: { name: comp.name, duration: comp.duration, frameRate: comp.frameRate, width: comp.width, height: comp.height },
+            changedProperties: changed
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
 // Functions for each script type
 function getProjectInfo() {
     var project = app.project;
@@ -1248,6 +1296,11 @@ function executeCommand(command, args) {
                 logToPanel("Calling batchSetLayerProperties function...");
                 result = batchSetLayerProperties(args);
                 logToPanel("Returned from batchSetLayerProperties.");
+                break;
+            case "setCompositionProperties":
+                logToPanel("Calling setCompositionProperties function...");
+                result = setCompositionProperties(args);
+                logToPanel("Returned from setCompositionProperties.");
                 break;
             default:
                 result = JSON.stringify({ error: "Unknown command: " + command });

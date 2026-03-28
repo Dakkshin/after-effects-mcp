@@ -186,7 +186,8 @@ server.tool(
       "test-animation",
       "bridgeTestEffects",
       "createCamera",
-      "batchSetLayerProperties"
+      "batchSetLayerProperties",
+      "setCompositionProperties"
     ];
     
     if (!allowedScripts.includes(script)) {
