@@ -198,6 +198,49 @@ function createCamera(args) {
     }
 }
 
+// --- duplicateLayer ---
+function duplicateLayer(args) {
+    try {
+        var compName = args.compName || "";
+        var layerIndex = args.layerIndex;
+        var layerName = args.layerName || "";
+        var newName = args.newName; // optional rename
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        var layer = null;
+        if (layerIndex !== undefined && layerIndex !== null) {
+            if (layerIndex > 0 && layerIndex <= comp.numLayers) { layer = comp.layer(layerIndex); }
+            else { throw new Error("Layer index out of bounds: " + layerIndex); }
+        } else if (layerName) {
+            for (var j = 1; j <= comp.numLayers; j++) {
+                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
+            }
+        }
+        if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
+
+        var newLayer = layer.duplicate();
+        if (newName) { newLayer.name = newName; }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Layer duplicated successfully",
+            original: { name: layer.name, index: layer.index },
+            duplicate: { name: newLayer.name, index: newLayer.index }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
 // --- createSolidLayer (from createSolidLayer.jsx) ---
 function createSolidLayer(args) {
     try {
@@ -338,6 +381,27 @@ function setLayerProperties(args) {
 
             } else {
                 logToPanel("Warning: Could not access Source Text property for layer: " + layer.name);
+            }
+        }
+
+        // --- Enabled/Visible ---
+        var enabled = args.enabled;
+        if (enabled !== undefined && enabled !== null) { layer.enabled = !!enabled; changedProperties.push("enabled"); }
+
+        // --- Track Matte ---
+        var trackMatteType = args.trackMatteType;
+        if (trackMatteType !== undefined && trackMatteType !== null) {
+            // Values: "none", "alpha", "alphaInverted", "luma", "lumaInverted"
+            var matteTypes = {
+                "none": TrackMatteType.NO_TRACK_MATTE,
+                "alpha": TrackMatteType.ALPHA,
+                "alphaInverted": TrackMatteType.ALPHA_INVERTED,
+                "luma": TrackMatteType.LUMA,
+                "lumaInverted": TrackMatteType.LUMA_INVERTED
+            };
+            if (matteTypes[trackMatteType] !== undefined) {
+                layer.trackMatteType = matteTypes[trackMatteType];
+                changedProperties.push("trackMatteType");
             }
         }
 
@@ -1219,11 +1283,11 @@ function getLayerInfo() {
 // Execute command
 function executeCommand(command, args) {
     var result = "";
-    
+
     logToPanel("Executing command: " + command);
     statusText.text = "Running: " + command;
     panel.update();
-    
+
     try {
         logToPanel("Attempting to execute: " + command); // Log before switch
         // Use a switch statement for clarity
@@ -1301,6 +1365,11 @@ function executeCommand(command, args) {
                 logToPanel("Calling setCompositionProperties function...");
                 result = setCompositionProperties(args);
                 logToPanel("Returned from setCompositionProperties.");
+                break;
+            case "duplicateLayer":
+                logToPanel("Calling duplicateLayer function...");
+                result = duplicateLayer(args);
+                logToPanel("Returned from duplicateLayer.");
                 break;
             default:
                 result = JSON.stringify({ error: "Unknown command: " + command });
@@ -1477,3 +1546,4 @@ startCommandChecker();
 // Show the panel
 panel.center();
 panel.show();
+

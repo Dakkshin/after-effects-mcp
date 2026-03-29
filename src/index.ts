@@ -187,7 +187,8 @@ server.tool(
       "bridgeTestEffects",
       "createCamera",
       "batchSetLayerProperties",
-      "setCompositionProperties"
+      "setCompositionProperties",
+      "duplicateLayer"
     ];
     
     if (!allowedScripts.includes(script)) {
