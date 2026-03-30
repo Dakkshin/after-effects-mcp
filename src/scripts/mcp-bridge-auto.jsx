@@ -241,6 +241,175 @@ function duplicateLayer(args) {
     }
 }
 
+// --- deleteLayer ---
+function deleteLayer(args) {
+    try {
+        var compName = args.compName || "";
+        var layerIndex = args.layerIndex;
+        var layerName = args.layerName || "";
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        var layer = null;
+        if (layerIndex !== undefined && layerIndex !== null) {
+            if (layerIndex > 0 && layerIndex <= comp.numLayers) { layer = comp.layer(layerIndex); }
+            else { throw new Error("Layer index out of bounds: " + layerIndex); }
+        } else if (layerName) {
+            for (var j = 1; j <= comp.numLayers; j++) {
+                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
+            }
+        }
+        if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
+
+        var deletedName = layer.name;
+        var deletedIndex = layer.index;
+        layer.remove();
+
+        return JSON.stringify({
+            status: "success",
+            message: "Layer deleted successfully",
+            deleted: { name: deletedName, index: deletedIndex }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- setLayerMask: create or modify a mask on a layer ---
+function setLayerMask(args) {
+    try {
+        var compName = args.compName || "";
+        var layerIndex = args.layerIndex;
+        var layerName = args.layerName || "";
+        var maskIndex = args.maskIndex; // optional — if provided, modify existing mask
+        var maskPath = args.maskPath; // array of [x, y] points defining the mask shape
+        var maskRect = args.maskRect; // shorthand: {top, left, width, height} for rectangular masks
+        var maskMode = args.maskMode || "add"; // "add", "subtract", "intersect", "none"
+        var maskFeather = args.maskFeather; // optional [x, y] feather
+        var maskOpacity = args.maskOpacity; // optional 0-100
+        var maskExpansion = args.maskExpansion; // optional pixels
+        var maskName = args.maskName; // optional rename
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        var layer = null;
+        if (layerIndex !== undefined && layerIndex !== null) {
+            if (layerIndex > 0 && layerIndex <= comp.numLayers) { layer = comp.layer(layerIndex); }
+            else { throw new Error("Layer index out of bounds: " + layerIndex); }
+        } else if (layerName) {
+            for (var j = 1; j <= comp.numLayers; j++) {
+                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
+            }
+        }
+        if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
+
+        // Build the mask shape
+        var shapePoints = [];
+        if (maskRect) {
+            // Rectangle shorthand
+            var t = maskRect.top || 0;
+            var l = maskRect.left || 0;
+            var w = maskRect.width || comp.width;
+            var h = maskRect.height || comp.height;
+            shapePoints = [[l, t], [l + w, t], [l + w, t + h], [l, t + h]];
+        } else if (maskPath && maskPath.length >= 3) {
+            shapePoints = maskPath;
+        } else {
+            throw new Error("Must provide either maskRect or maskPath with at least 3 points");
+        }
+
+        // Create the shape object
+        var myShape = new Shape();
+        var vertices = [];
+        for (var p = 0; p < shapePoints.length; p++) {
+            vertices.push(shapePoints[p]);
+        }
+        myShape.vertices = vertices;
+        myShape.closed = true;
+
+        var changed = [];
+        var mask;
+
+        if (maskIndex !== undefined && maskIndex !== null) {
+            // Modify existing mask
+            if (maskIndex > 0 && maskIndex <= layer.property("Masks").numProperties) {
+                mask = layer.property("Masks").property(maskIndex);
+            } else {
+                throw new Error("Mask index out of bounds: " + maskIndex);
+            }
+            mask.property("Mask Path").setValue(myShape);
+            changed.push("maskPath");
+        } else {
+            // Create new mask
+            mask = layer.property("Masks").addProperty("Mask");
+            mask.property("Mask Path").setValue(myShape);
+            changed.push("newMask");
+        }
+
+        // Set mask mode
+        var modes = {
+            "none": MaskMode.NONE,
+            "add": MaskMode.ADD,
+            "subtract": MaskMode.SUBTRACT,
+            "intersect": MaskMode.INTERSECT,
+            "lighten": MaskMode.LIGHTEN,
+            "darken": MaskMode.DARKEN,
+            "difference": MaskMode.DIFFERENCE
+        };
+        if (modes[maskMode] !== undefined) {
+            mask.maskMode = modes[maskMode];
+            changed.push("maskMode");
+        }
+
+        if (maskFeather !== undefined && maskFeather !== null) {
+            mask.property("Mask Feather").setValue(maskFeather);
+            changed.push("maskFeather");
+        }
+        if (maskOpacity !== undefined && maskOpacity !== null) {
+            mask.property("Mask Opacity").setValue(maskOpacity);
+            changed.push("maskOpacity");
+        }
+        if (maskExpansion !== undefined && maskExpansion !== null) {
+            mask.property("Mask Expansion").setValue(maskExpansion);
+            changed.push("maskExpansion");
+        }
+        if (maskName) {
+            mask.name = maskName;
+            changed.push("maskName");
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Mask set successfully",
+            layer: { name: layer.name, index: layer.index },
+            mask: {
+                name: mask.name,
+                index: mask.propertyIndex,
+                mode: maskMode,
+                changedProperties: changed
+            }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
 // --- createSolidLayer (from createSolidLayer.jsx) ---
 function createSolidLayer(args) {
     try {
@@ -388,6 +557,34 @@ function setLayerProperties(args) {
         var enabled = args.enabled;
         if (enabled !== undefined && enabled !== null) { layer.enabled = !!enabled; changedProperties.push("enabled"); }
 
+        // --- Blend Mode ---
+        var blendMode = args.blendMode;
+        if (blendMode !== undefined && blendMode !== null) {
+            var modes = {
+                "normal": BlendingMode.NORMAL,
+                "add": BlendingMode.ADD,
+                "multiply": BlendingMode.MULTIPLY,
+                "screen": BlendingMode.SCREEN,
+                "overlay": BlendingMode.OVERLAY,
+                "softLight": BlendingMode.SOFT_LIGHT,
+                "hardLight": BlendingMode.HARD_LIGHT,
+                "colorDodge": BlendingMode.COLOR_DODGE,
+                "colorBurn": BlendingMode.COLOR_BURN,
+                "darken": BlendingMode.DARKEN,
+                "lighten": BlendingMode.LIGHTEN,
+                "difference": BlendingMode.DIFFERENCE,
+                "exclusion": BlendingMode.EXCLUSION,
+                "hue": BlendingMode.HUE,
+                "saturation": BlendingMode.SATURATION,
+                "color": BlendingMode.COLOR,
+                "luminosity": BlendingMode.LUMINOSITY
+            };
+            if (modes[blendMode] !== undefined) {
+                layer.blendingMode = modes[blendMode];
+                changedProperties.push("blendMode");
+            }
+        }
+
         // --- Track Matte ---
         var trackMatteType = args.trackMatteType;
         if (trackMatteType !== undefined && trackMatteType !== null) {
@@ -520,6 +717,10 @@ function batchSetLayerProperties(args) {
                 changed.push("rotation");
             }
             if (op.opacity !== undefined && op.opacity !== null) { layer.property("Opacity").setValue(op.opacity); changed.push("opacity"); }
+            if (op.blendMode !== undefined && op.blendMode !== null) {
+                var bModes = {"normal":BlendingMode.NORMAL,"add":BlendingMode.ADD,"multiply":BlendingMode.MULTIPLY,"screen":BlendingMode.SCREEN,"overlay":BlendingMode.OVERLAY,"softLight":BlendingMode.SOFT_LIGHT,"hardLight":BlendingMode.HARD_LIGHT,"darken":BlendingMode.DARKEN,"lighten":BlendingMode.LIGHTEN,"difference":BlendingMode.DIFFERENCE};
+                if (bModes[op.blendMode] !== undefined) { layer.blendingMode = bModes[op.blendMode]; changed.push("blendMode"); }
+            }
             if (op.startTime !== undefined && op.startTime !== null) { layer.startTime = op.startTime; changed.push("startTime"); }
             if (op.outPoint !== undefined && op.outPoint !== null) { layer.outPoint = op.outPoint; changed.push("outPoint"); }
 
@@ -634,7 +835,19 @@ function setLayerExpression(compIndex, layerIndex, propertyName, expressionStrin
                  property = layer.property("Effects").property(propertyName);
              } else if (layer.property("Text") && layer.property("Text").property(propertyName)) {
                  property = layer.property("Text").property(propertyName);
-             } // Add more groups if needed
+             }
+
+            // Search inside individual effects for sub-properties
+            if (!property && layer.property("Effects")) {
+                var effects = layer.property("Effects");
+                for (var ei = 1; ei <= effects.numProperties; ei++) {
+                    var eff = effects.property(ei);
+                    try {
+                        var subProp = eff.property(propertyName);
+                        if (subProp) { property = subProp; break; }
+                    } catch (e2) {}
+                }
+            }
 
             if (!property) {
                  return JSON.stringify({ success: false, message: "Property '" + propertyName + "' not found on layer '" + layer.name + "'." });
@@ -751,9 +964,10 @@ function applyEffect(args) {
 // Helper function to apply effect settings
 function applyEffectSettings(effect, settings) {
     // Skip if no settings are provided
-    if (!settings || Object.keys(settings).length === 0) {
-        return;
-    }
+    if (!settings) return;
+    var hasKeys = false;
+    for (var k in settings) { if (settings.hasOwnProperty(k)) { hasKeys = true; break; } }
+    if (!hasKeys) return;
     
     // Iterate through all provided settings
     for (var propName in settings) {
@@ -1370,6 +1584,16 @@ function executeCommand(command, args) {
                 logToPanel("Calling duplicateLayer function...");
                 result = duplicateLayer(args);
                 logToPanel("Returned from duplicateLayer.");
+                break;
+            case "deleteLayer":
+                logToPanel("Calling deleteLayer function...");
+                result = deleteLayer(args);
+                logToPanel("Returned from deleteLayer.");
+                break;
+            case "setLayerMask":
+                logToPanel("Calling setLayerMask function...");
+                result = setLayerMask(args);
+                logToPanel("Returned from setLayerMask.");
                 break;
             default:
                 result = JSON.stringify({ error: "Unknown command: " + command });

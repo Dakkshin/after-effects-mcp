@@ -188,7 +188,9 @@ server.tool(
       "createCamera",
       "batchSetLayerProperties",
       "setCompositionProperties",
-      "duplicateLayer"
+      "duplicateLayer",
+      "deleteLayer",
+      "setLayerMask"
     ];
     
     if (!allowedScripts.includes(script)) {
