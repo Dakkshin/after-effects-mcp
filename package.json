@@ -5,7 +5,7 @@
   "main": "build/index.js",
   "type": "module",
   "scripts": {
-    "build": "tsc && copyfiles -u 1 \"src/scripts/**/*\" build",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=build/index.js --external:@modelcontextprotocol/sdk && copyfiles -u 1 \"src/scripts/**/*\" build",
     "start": "node build/index.js",
     "install-bridge": "node install-bridge.js",
     "postinstall": "npm run build"
@@ -18,6 +18,7 @@
   "devDependencies": {
     "@types/node": "^20.17.30",
     "copyfiles": "^2.4.1",
+    "esbuild": "^0.27.4",
     "typescript": "^5.2.2"
   }
 }
