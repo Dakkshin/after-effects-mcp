@@ -750,12 +750,28 @@ function batchSetLayerProperties(args) {
  * @param {any} value - The value for the keyframe (e.g., [x, y] for Position, [w, h] for Scale, angle for Rotation, percentage for Opacity).
  * @returns {string} JSON string indicating success or error.
  */
-function setLayerKeyframe(compIndex, layerIndex, propertyName, timeInSeconds, value) {
+function setLayerKeyframe(compIndex, layerIndex, propertyName, timeInSeconds, value, args) {
     try {
-        // Use 1-based indices as per After Effects API
-        var comp = app.project.items[compIndex];
+        // Support compName as first arg (passed as compIndex for backwards compat)
+        var comp = null;
+        if (typeof compIndex === "string") {
+            // Find by name
+            for (var ci = 1; ci <= app.project.numItems; ci++) {
+                var cItem = app.project.item(ci);
+                if (cItem instanceof CompItem && cItem.name === compIndex) { comp = cItem; break; }
+            }
+            if (!comp) {
+                // Try active comp
+                if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            }
+        } else if (compIndex === 0 || compIndex === undefined || compIndex === null) {
+            // Use active comp
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+        } else {
+            comp = app.project.items[compIndex];
+        }
         if (!comp || !(comp instanceof CompItem)) {
-            return JSON.stringify({ success: false, message: "Composition not found at index " + compIndex });
+            return JSON.stringify({ success: false, message: "Composition not found" });
         }
         var layer = comp.layers[layerIndex];
         if (!layer) {
@@ -774,7 +790,19 @@ function setLayerKeyframe(compIndex, layerIndex, propertyName, timeInSeconds, va
                  property = layer.property("Effects").property(propertyName);
              } else if (layer.property("Text") && layer.property("Text").property(propertyName)) {
                  property = layer.property("Text").property(propertyName);
-            } // Add more groups if needed (e.g., Masks, Shapes)
+            }
+
+            // Search inside individual effects for sub-properties
+            if (!property && layer.property("Effects")) {
+                var effects = layer.property("Effects");
+                for (var ei = 1; ei <= effects.numProperties; ei++) {
+                    var eff = effects.property(ei);
+                    try {
+                        var subProp = eff.property(propertyName);
+                        if (subProp) { property = subProp; break; }
+                    } catch (e2) {}
+                }
+            }
 
             if (!property) {
                  return JSON.stringify({ success: false, message: "Property '" + propertyName + "' not found on layer '" + layer.name + "'." });
@@ -787,20 +815,112 @@ function setLayerKeyframe(compIndex, layerIndex, propertyName, timeInSeconds, va
              return JSON.stringify({ success: false, message: "Property '" + propertyName + "' cannot be keyframed." });
         }
 
+        // Clear existing keyframes if requested
+        var clearExisting = args && args.clearExisting;
+        if (clearExisting && property.numKeys > 0) {
+            for (var ck = property.numKeys; ck >= 1; ck--) {
+                property.removeKey(ck);
+            }
+        }
+
         // Make sure the property is enabled for keyframing
         if (property.numKeys === 0 && !property.isTimeVarying) {
              property.setValueAtTime(comp.time, property.value); // Set initial keyframe if none exist
         }
 
-
         property.setValueAtTime(timeInSeconds, value);
 
-        return JSON.stringify({ success: true, message: "Keyframe set for '" + propertyName + "' on layer '" + layer.name + "' at " + timeInSeconds + "s." });
+        return JSON.stringify({ success: true, message: "Keyframe set for '" + propertyName + "' on layer '" + layer.name + "' at " + timeInSeconds + "s." + (clearExisting ? " (cleared existing)" : "") });
     } catch (e) {
         return JSON.stringify({ success: false, message: "Error setting keyframe: " + e.toString() + " (Line: " + e.line + ")" });
     }
 }
 
+
+// --- removeKeyframe: remove a keyframe at a specific time from a property ---
+function removeKeyframe(args) {
+    try {
+        var compIndex = args.compIndex;
+        var layerIndex = args.layerIndex;
+        var propertyName = args.propertyName;
+        var timeInSeconds = args.timeInSeconds;
+
+        // Find comp (same logic as setLayerKeyframe)
+        var comp = null;
+        if (compIndex === 0 || compIndex === undefined || compIndex === null) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+        } else {
+            comp = app.project.items[compIndex];
+        }
+        if (!comp || !(comp instanceof CompItem)) {
+            return JSON.stringify({ success: false, message: "Composition not found" });
+        }
+
+        var layer = comp.layers[layerIndex];
+        if (!layer) {
+            return JSON.stringify({ success: false, message: "Layer not found at index " + layerIndex });
+        }
+
+        // Find property (same search logic as setLayerKeyframe)
+        var transformGroup = layer.property("Transform");
+        var property = transformGroup ? transformGroup.property(propertyName) : null;
+        if (!property) {
+            if (layer.property("Effects") && layer.property("Effects").property(propertyName)) {
+                property = layer.property("Effects").property(propertyName);
+            }
+            if (!property && layer.property("Effects")) {
+                var effects = layer.property("Effects");
+                for (var ei = 1; ei <= effects.numProperties; ei++) {
+                    try {
+                        var subProp = effects.property(ei).property(propertyName);
+                        if (subProp) { property = subProp; break; }
+                    } catch (e2) {}
+                }
+            }
+            if (!property) {
+                return JSON.stringify({ success: false, message: "Property '" + propertyName + "' not found" });
+            }
+        }
+
+        if (property.numKeys === 0) {
+            return JSON.stringify({ success: false, message: "Property has no keyframes" });
+        }
+
+        var keyIndex = args.keyIndex; // 1-based keyframe index
+        var removeAll = args.removeAll || false;
+
+        if (removeAll) {
+            // Remove all keyframes (iterate backwards)
+            var count = property.numKeys;
+            for (var ki = count; ki >= 1; ki--) {
+                property.removeKey(ki);
+            }
+            return JSON.stringify({ success: true, message: "Removed all " + count + " keyframes from '" + propertyName + "' on layer '" + layer.name + "'" });
+        } else if (keyIndex !== undefined && keyIndex !== null) {
+            // Remove by keyframe index
+            if (keyIndex < 1 || keyIndex > property.numKeys) {
+                return JSON.stringify({ success: false, message: "Key index " + keyIndex + " out of range (1 to " + property.numKeys + ")" });
+            }
+            var removedTime = property.keyTime(keyIndex);
+            property.removeKey(keyIndex);
+            return JSON.stringify({ success: true, message: "Keyframe " + keyIndex + " removed at " + removedTime + "s from '" + propertyName + "' on layer '" + layer.name + "'" });
+        } else if (timeInSeconds !== undefined && timeInSeconds !== null) {
+            // Remove by time (nearest match within tolerance)
+            var nearestIdx = property.nearestKeyIndex(timeInSeconds);
+            var nearestTime = property.keyTime(nearestIdx);
+            if (Math.abs(nearestTime - timeInSeconds) < 0.05) {
+                property.removeKey(nearestIdx);
+                return JSON.stringify({ success: true, message: "Keyframe removed at " + nearestTime + "s from '" + propertyName + "' on layer '" + layer.name + "'" });
+            } else {
+                return JSON.stringify({ success: false, message: "No keyframe found at " + timeInSeconds + "s (nearest is at " + nearestTime + "s)" });
+            }
+        } else {
+            return JSON.stringify({ success: false, message: "Must specify timeInSeconds, keyIndex, or removeAll" });
+        }
+    } catch (e) {
+        return JSON.stringify({ success: false, message: "Error: " + e.toString() });
+    }
+}
 
 /**
  * Sets an expression for a specific property on a layer.
@@ -812,10 +932,14 @@ function setLayerKeyframe(compIndex, layerIndex, propertyName, timeInSeconds, va
  */
 function setLayerExpression(compIndex, layerIndex, propertyName, expressionString) {
     try {
-         // Adjust indices to be 0-based for ExtendScript arrays
-        var comp = app.project.items[compIndex];
-         if (!comp || !(comp instanceof CompItem)) {
-            return JSON.stringify({ success: false, message: "Composition not found at index " + compIndex });
+        var comp = null;
+        if (compIndex === 0 || compIndex === undefined || compIndex === null) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+        } else {
+            comp = app.project.items[compIndex];
+        }
+        if (!comp || !(comp instanceof CompItem)) {
+            return JSON.stringify({ success: false, message: "Composition not found" });
         }
         var layer = comp.layers[layerIndex];
          if (!layer) {
@@ -1003,6 +1127,76 @@ function applyEffectSettings(effect, settings) {
 }
 
 // --- applyEffectTemplate (from applyEffectTemplate.jsx) ---
+// --- removeEffect: remove an effect from a layer by name or index ---
+function removeEffect(args) {
+    try {
+        var compName = args.compName || "";
+        var layerIndex = args.layerIndex;
+        var layerName = args.layerName || "";
+        var effectName = args.effectName; // remove by name
+        var effectIndex = args.effectIndex; // or by index
+        var removeAll = args.removeAll || false; // remove all matching by name
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found"); }
+        }
+
+        var layer = null;
+        if (layerIndex !== undefined && layerIndex !== null) {
+            layer = comp.layer(layerIndex);
+        } else if (layerName) {
+            for (var j = 1; j <= comp.numLayers; j++) {
+                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
+            }
+        }
+        if (!layer) { throw new Error("Layer not found"); }
+
+        var effects = layer.property("Effects");
+        if (!effects || effects.numProperties === 0) {
+            throw new Error("No effects on layer '" + layer.name + "'");
+        }
+
+        var removed = [];
+        if (effectIndex !== undefined && effectIndex !== null) {
+            var eff = effects.property(effectIndex);
+            if (!eff) { throw new Error("Effect index " + effectIndex + " not found"); }
+            var name = eff.name;
+            eff.remove();
+            removed.push(name);
+        } else if (effectName) {
+            // Remove by name — iterate backwards to avoid index shifting
+            for (var e = effects.numProperties; e >= 1; e--) {
+                var eff = effects.property(e);
+                if (eff.name === effectName) {
+                    eff.remove();
+                    removed.push(effectName);
+                    if (!removeAll) break;
+                }
+            }
+            if (removed.length === 0) {
+                throw new Error("Effect '" + effectName + "' not found on layer '" + layer.name + "'");
+            }
+        } else {
+            throw new Error("Must specify effectName or effectIndex");
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Removed " + removed.length + " effect(s)",
+            removed: removed,
+            layer: { name: layer.name, index: layer.index }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
 function applyEffectTemplate(args) {
     try {
         // Extract parameters
@@ -1460,12 +1654,18 @@ function listCompositions() {
     return JSON.stringify(result, null, 2);
 }
 
-function getLayerInfo() {
+function getLayerInfo(args) {
     var project = app.project;
+    if (!args) args = {};
+
+    var includeEffects = args.includeEffects || false;
+    var includeKeyframes = args.includeKeyframes || false;
+    var layerFilter = args.layerIndex; // optional: only return info for a specific layer
+
     var result = {
         layers: []
     };
-    
+
     // Get the active composition
     var activeComp = null;
     if (app.project.activeItem instanceof CompItem) {
@@ -1473,9 +1673,11 @@ function getLayerInfo() {
     } else {
         return JSON.stringify({ error: "No active composition" }, null, 2);
     }
-    
+
     // Loop through layers in the active composition
     for (var i = 1; i <= activeComp.numLayers; i++) {
+        if (layerFilter !== undefined && layerFilter !== null && i !== layerFilter) continue;
+
         var layer = activeComp.layer(i);
         var layerInfo = {
             index: layer.index,
@@ -1484,13 +1686,110 @@ function getLayerInfo() {
             locked: layer.locked,
             threeDLayer: layer.threeDLayer,
             position: layer.property("Position").value,
+            blendingMode: layer.blendingMode,
             inPoint: layer.inPoint,
             outPoint: layer.outPoint
         };
-        
+
+        // Effects: always return names/enabled, only return properties if includeEffects or includeKeyframes
+        if (layer.property("Effects") && layer.property("Effects").numProperties > 0) {
+            layerInfo.effects = [];
+            var effects = layer.property("Effects");
+            for (var e = 1; e <= effects.numProperties; e++) {
+                var eff = effects.property(e);
+                var effInfo = {
+                    name: eff.name,
+                    matchName: eff.matchName,
+                    enabled: eff.enabled
+                };
+
+                if (includeEffects || includeKeyframes) {
+                    effInfo.properties = [];
+                    for (var p = 1; p <= eff.numProperties; p++) {
+                        try {
+                            var prop = eff.property(p);
+                            if (prop.propertyValueType === PropertyValueType.NO_VALUE) continue;
+
+                            var hasKeys = prop.numKeys > 0;
+                            var hasExpr = prop.expressionEnabled;
+
+                            // If includeKeyframes only, skip properties without keyframes/expressions
+                            if (includeKeyframes && !includeEffects && !hasKeys && !hasExpr) continue;
+
+                            var propInfo = {
+                                name: prop.name,
+                                value: prop.value
+                            };
+                            if (hasKeys) {
+                                propInfo.numKeys = prop.numKeys;
+                                propInfo.keyframes = [];
+                                for (var k = 1; k <= Math.min(prop.numKeys, 20); k++) {
+                                    propInfo.keyframes.push({
+                                        time: prop.keyTime(k),
+                                        value: prop.keyValue(k)
+                                    });
+                                }
+                            }
+                            if (hasExpr) {
+                                propInfo.expression = prop.expression;
+                            }
+                            effInfo.properties.push(propInfo);
+                        } catch (ex) {}
+                    }
+                }
+
+                layerInfo.effects.push(effInfo);
+            }
+        }
+
+        // Transform keyframes: only if includeKeyframes
+        if (includeKeyframes) {
+            layerInfo.keyframedProperties = [];
+            var transformProps = ["Position", "Scale", "Rotation", "Opacity", "Anchor Point"];
+            if (layer.threeDLayer) {
+                transformProps.push("X Rotation", "Y Rotation", "Z Rotation");
+            }
+            for (var t = 0; t < transformProps.length; t++) {
+                try {
+                    var tProp = layer.property("Transform").property(transformProps[t]);
+                    if (tProp && (tProp.numKeys > 0 || tProp.expressionEnabled)) {
+                        var tInfo = {
+                            name: transformProps[t],
+                            value: tProp.value,
+                            numKeys: tProp.numKeys,
+                            keyframes: []
+                        };
+                        for (var k2 = 1; k2 <= Math.min(tProp.numKeys, 20); k2++) {
+                            tInfo.keyframes.push({
+                                time: tProp.keyTime(k2),
+                                value: tProp.keyValue(k2)
+                            });
+                        }
+                        if (tProp.expressionEnabled) {
+                            tInfo.expression = tProp.expression;
+                        }
+                        layerInfo.keyframedProperties.push(tInfo);
+                    }
+                } catch (ex2) {}
+            }
+        }
+
+        // Mask info: always include if present (lightweight)
+        if (layer.property("Masks") && layer.property("Masks").numProperties > 0) {
+            layerInfo.masks = [];
+            for (var m = 1; m <= layer.property("Masks").numProperties; m++) {
+                var mask = layer.property("Masks").property(m);
+                layerInfo.masks.push({
+                    name: mask.name,
+                    mode: mask.maskMode,
+                    numPathKeys: mask.property("Mask Path").numKeys
+                });
+            }
+        }
+
         result.layers.push(layerInfo);
     }
-    
+
     return JSON.stringify(result, null, 2);
 }
 
@@ -1513,7 +1812,7 @@ function executeCommand(command, args) {
                 result = listCompositions();
                 break;
             case "getLayerInfo":
-                result = getLayerInfo();
+                result = getLayerInfo(args);
                 break;
             case "createComposition":
                 logToPanel("Calling createComposition function...");
@@ -1542,7 +1841,7 @@ function executeCommand(command, args) {
                 break;
             case "setLayerKeyframe":
                 logToPanel("Calling setLayerKeyframe function...");
-                result = setLayerKeyframe(args.compIndex, args.layerIndex, args.propertyName, args.timeInSeconds, args.value);
+                result = setLayerKeyframe(args.compIndex, args.layerIndex, args.propertyName, args.timeInSeconds, args.value, args);
                 logToPanel("Returned from setLayerKeyframe.");
                 break;
             case "setLayerExpression":
@@ -1594,6 +1893,16 @@ function executeCommand(command, args) {
                 logToPanel("Calling setLayerMask function...");
                 result = setLayerMask(args);
                 logToPanel("Returned from setLayerMask.");
+                break;
+            case "removeEffect":
+                logToPanel("Calling removeEffect function...");
+                result = removeEffect(args);
+                logToPanel("Returned from removeEffect.");
+                break;
+            case "removeKeyframe":
+                logToPanel("Calling removeKeyframe function...");
+                result = removeKeyframe(args);
+                logToPanel("Returned from removeKeyframe.");
                 break;
             default:
                 result = JSON.stringify({ error: "Unknown command: " + command });

@@ -190,7 +190,9 @@ server.tool(
       "setCompositionProperties",
       "duplicateLayer",
       "deleteLayer",
-      "setLayerMask"
+      "setLayerMask",
+      "removeEffect",
+      "removeKeyframe"
     ];
     
     if (!allowedScripts.includes(script)) {
@@ -435,7 +437,7 @@ server.tool(
 
 // Zod schema for common layer identification
 const LayerIdentifierSchema = {
-  compIndex: z.number().int().positive().describe("1-based index of the target composition in the project panel."),
+  compIndex: z.number().int().min(0).describe("1-based index of the target composition in the project panel. Use 0 for active composition."),
   layerIndex: z.number().int().positive().describe("1-based index of the target layer within the composition.")
 };
 
@@ -451,7 +453,8 @@ server.tool(
     ...LayerIdentifierSchema, // Reuse common identifiers
     propertyName: z.string().describe("Name of the property to keyframe (e.g., 'Position', 'Scale', 'Rotation', 'Opacity')."),
     timeInSeconds: z.number().describe("The time (in seconds) for the keyframe."),
-    value: KeyframeValueSchema
+    value: KeyframeValueSchema,
+    clearExisting: z.boolean().optional().describe("If true, removes all existing keyframes on this property before setting the new one.")
   },
   async (parameters) => {
     try {
