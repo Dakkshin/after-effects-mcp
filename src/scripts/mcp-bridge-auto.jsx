@@ -141,7 +141,276 @@ function createShapeLayer(args) {
     }
 }
 
-// --- createSolidLayer (from createSolidLayer.jsx) --- 
+// --- createCamera ---
+function createCamera(args) {
+    try {
+        var compName = args.compName || "";
+        var name = args.name || "Camera";
+        var zoom = args.zoom || 1777.78; // Default ~50mm equivalent
+        var position = args.position; // Optional [x, y, z]
+        var pointOfInterest = args.pointOfInterest; // Optional [x, y, z]
+        var oneNode = args.oneNode || false; // If true, create a one-node camera (no point of interest)
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        var centerPoint = [comp.width / 2, comp.height / 2];
+        var cameraLayer = comp.layers.addCamera(name, centerPoint);
+        cameraLayer.property("Camera Options").property("Zoom").setValue(zoom);
+
+        if (oneNode) {
+            cameraLayer.autoOrient = AutoOrientType.NO_AUTO_ORIENT;
+        }
+
+        if (position !== undefined && position !== null) {
+            cameraLayer.property("Position").setValue(position);
+        }
+
+        if (pointOfInterest !== undefined && pointOfInterest !== null && !oneNode) {
+            cameraLayer.property("Point of Interest").setValue(pointOfInterest);
+        }
+
+        var result = {
+            name: cameraLayer.name,
+            index: cameraLayer.index,
+            zoom: cameraLayer.property("Camera Options").property("Zoom").value,
+            position: cameraLayer.property("Position").value,
+            oneNode: oneNode
+        };
+        if (!oneNode) {
+            result.pointOfInterest = cameraLayer.property("Point of Interest").value;
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Camera created successfully",
+            layer: result
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- duplicateLayer ---
+function duplicateLayer(args) {
+    try {
+        var compName = args.compName || "";
+        var layerIndex = args.layerIndex;
+        var layerName = args.layerName || "";
+        var newName = args.newName; // optional rename
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        var layer = null;
+        if (layerIndex !== undefined && layerIndex !== null) {
+            if (layerIndex > 0 && layerIndex <= comp.numLayers) { layer = comp.layer(layerIndex); }
+            else { throw new Error("Layer index out of bounds: " + layerIndex); }
+        } else if (layerName) {
+            for (var j = 1; j <= comp.numLayers; j++) {
+                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
+            }
+        }
+        if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
+
+        var newLayer = layer.duplicate();
+        if (newName) { newLayer.name = newName; }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Layer duplicated successfully",
+            original: { name: layer.name, index: layer.index },
+            duplicate: { name: newLayer.name, index: newLayer.index }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- deleteLayer ---
+function deleteLayer(args) {
+    try {
+        var compName = args.compName || "";
+        var layerIndex = args.layerIndex;
+        var layerName = args.layerName || "";
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        var layer = null;
+        if (layerIndex !== undefined && layerIndex !== null) {
+            if (layerIndex > 0 && layerIndex <= comp.numLayers) { layer = comp.layer(layerIndex); }
+            else { throw new Error("Layer index out of bounds: " + layerIndex); }
+        } else if (layerName) {
+            for (var j = 1; j <= comp.numLayers; j++) {
+                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
+            }
+        }
+        if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
+
+        var deletedName = layer.name;
+        var deletedIndex = layer.index;
+        layer.remove();
+
+        return JSON.stringify({
+            status: "success",
+            message: "Layer deleted successfully",
+            deleted: { name: deletedName, index: deletedIndex }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- setLayerMask: create or modify a mask on a layer ---
+function setLayerMask(args) {
+    try {
+        var compName = args.compName || "";
+        var layerIndex = args.layerIndex;
+        var layerName = args.layerName || "";
+        var maskIndex = args.maskIndex; // optional — if provided, modify existing mask
+        var maskPath = args.maskPath; // array of [x, y] points defining the mask shape
+        var maskRect = args.maskRect; // shorthand: {top, left, width, height} for rectangular masks
+        var maskMode = args.maskMode || "add"; // "add", "subtract", "intersect", "none"
+        var maskFeather = args.maskFeather; // optional [x, y] feather
+        var maskOpacity = args.maskOpacity; // optional 0-100
+        var maskExpansion = args.maskExpansion; // optional pixels
+        var maskName = args.maskName; // optional rename
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        var layer = null;
+        if (layerIndex !== undefined && layerIndex !== null) {
+            if (layerIndex > 0 && layerIndex <= comp.numLayers) { layer = comp.layer(layerIndex); }
+            else { throw new Error("Layer index out of bounds: " + layerIndex); }
+        } else if (layerName) {
+            for (var j = 1; j <= comp.numLayers; j++) {
+                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
+            }
+        }
+        if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
+
+        // Build the mask shape
+        var shapePoints = [];
+        if (maskRect) {
+            // Rectangle shorthand
+            var t = maskRect.top || 0;
+            var l = maskRect.left || 0;
+            var w = maskRect.width || comp.width;
+            var h = maskRect.height || comp.height;
+            shapePoints = [[l, t], [l + w, t], [l + w, t + h], [l, t + h]];
+        } else if (maskPath && maskPath.length >= 3) {
+            shapePoints = maskPath;
+        } else {
+            throw new Error("Must provide either maskRect or maskPath with at least 3 points");
+        }
+
+        // Create the shape object
+        var myShape = new Shape();
+        var vertices = [];
+        for (var p = 0; p < shapePoints.length; p++) {
+            vertices.push(shapePoints[p]);
+        }
+        myShape.vertices = vertices;
+        myShape.closed = true;
+
+        var changed = [];
+        var mask;
+
+        if (maskIndex !== undefined && maskIndex !== null) {
+            // Modify existing mask
+            if (maskIndex > 0 && maskIndex <= layer.property("Masks").numProperties) {
+                mask = layer.property("Masks").property(maskIndex);
+            } else {
+                throw new Error("Mask index out of bounds: " + maskIndex);
+            }
+            mask.property("Mask Path").setValue(myShape);
+            changed.push("maskPath");
+        } else {
+            // Create new mask
+            mask = layer.property("Masks").addProperty("Mask");
+            mask.property("Mask Path").setValue(myShape);
+            changed.push("newMask");
+        }
+
+        // Set mask mode
+        var modes = {
+            "none": MaskMode.NONE,
+            "add": MaskMode.ADD,
+            "subtract": MaskMode.SUBTRACT,
+            "intersect": MaskMode.INTERSECT,
+            "lighten": MaskMode.LIGHTEN,
+            "darken": MaskMode.DARKEN,
+            "difference": MaskMode.DIFFERENCE
+        };
+        if (modes[maskMode] !== undefined) {
+            mask.maskMode = modes[maskMode];
+            changed.push("maskMode");
+        }
+
+        if (maskFeather !== undefined && maskFeather !== null) {
+            mask.property("Mask Feather").setValue(maskFeather);
+            changed.push("maskFeather");
+        }
+        if (maskOpacity !== undefined && maskOpacity !== null) {
+            mask.property("Mask Opacity").setValue(maskOpacity);
+            changed.push("maskOpacity");
+        }
+        if (maskExpansion !== undefined && maskExpansion !== null) {
+            mask.property("Mask Expansion").setValue(maskExpansion);
+            changed.push("maskExpansion");
+        }
+        if (maskName) {
+            mask.name = maskName;
+            changed.push("maskName");
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Mask set successfully",
+            layer: { name: layer.name, index: layer.index },
+            mask: {
+                name: mask.name,
+                index: mask.propertyIndex,
+                mode: maskMode,
+                changedProperties: changed
+            }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- createSolidLayer (from createSolidLayer.jsx) ---
 function createSolidLayer(args) {
     try {
         var compName = args.compName || "";
@@ -284,8 +553,64 @@ function setLayerProperties(args) {
             }
         }
 
+        // --- Enabled/Visible ---
+        var enabled = args.enabled;
+        if (enabled !== undefined && enabled !== null) { layer.enabled = !!enabled; changedProperties.push("enabled"); }
+
+        // --- Blend Mode ---
+        var blendMode = args.blendMode;
+        if (blendMode !== undefined && blendMode !== null) {
+            var modes = {
+                "normal": BlendingMode.NORMAL,
+                "add": BlendingMode.ADD,
+                "multiply": BlendingMode.MULTIPLY,
+                "screen": BlendingMode.SCREEN,
+                "overlay": BlendingMode.OVERLAY,
+                "softLight": BlendingMode.SOFT_LIGHT,
+                "hardLight": BlendingMode.HARD_LIGHT,
+                "colorDodge": BlendingMode.COLOR_DODGE,
+                "colorBurn": BlendingMode.COLOR_BURN,
+                "darken": BlendingMode.DARKEN,
+                "lighten": BlendingMode.LIGHTEN,
+                "difference": BlendingMode.DIFFERENCE,
+                "exclusion": BlendingMode.EXCLUSION,
+                "hue": BlendingMode.HUE,
+                "saturation": BlendingMode.SATURATION,
+                "color": BlendingMode.COLOR,
+                "luminosity": BlendingMode.LUMINOSITY
+            };
+            if (modes[blendMode] !== undefined) {
+                layer.blendingMode = modes[blendMode];
+                changedProperties.push("blendMode");
+            }
+        }
+
+        // --- Track Matte ---
+        var trackMatteType = args.trackMatteType;
+        if (trackMatteType !== undefined && trackMatteType !== null) {
+            // Values: "none", "alpha", "alphaInverted", "luma", "lumaInverted"
+            var matteTypes = {
+                "none": TrackMatteType.NO_TRACK_MATTE,
+                "alpha": TrackMatteType.ALPHA,
+                "alphaInverted": TrackMatteType.ALPHA_INVERTED,
+                "luma": TrackMatteType.LUMA,
+                "lumaInverted": TrackMatteType.LUMA_INVERTED
+            };
+            if (matteTypes[trackMatteType] !== undefined) {
+                layer.trackMatteType = matteTypes[trackMatteType];
+                changedProperties.push("trackMatteType");
+            }
+        }
+
         // --- General Property Handling ---
-        if (position !== undefined && position !== null) { layer.property("Position").setValue(position); changedProperties.push("position"); }
+        var threeDLayer = args.threeDLayer;
+        if (threeDLayer !== undefined && threeDLayer !== null) { layer.threeDLayer = !!threeDLayer; changedProperties.push("threeDLayer"); }
+        if (position !== undefined && position !== null) {
+            var posProp = layer.property("Position");
+            if (posProp.numKeys > 0) { while (posProp.numKeys > 0) { posProp.removeKey(1); } }
+            posProp.setValue(position);
+            changedProperties.push("position");
+        }
         if (scale !== undefined && scale !== null) { layer.property("Scale").setValue(scale); changedProperties.push("scale"); }
         if (rotation !== undefined && rotation !== null) {
             if (layer.threeDLayer) { 
@@ -308,6 +633,7 @@ function setLayerProperties(args) {
         var returnLayerInfo = {
             name: layer.name,
             index: layer.index,
+            threeDLayer: layer.threeDLayer,
             position: layer.property("Position").value,
             scale: layer.property("Scale").value,
             rotation: layer.threeDLayer ? layer.property("Z Rotation").value : layer.property("Rotation").value, // Return appropriate rotation
@@ -336,6 +662,80 @@ function setLayerProperties(args) {
         }, null, 2);
     } catch (error) {
         // Error handling remains similar, but add more specific checks if needed
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- batchSetLayerProperties: apply properties to multiple layers in one call ---
+function batchSetLayerProperties(args) {
+    try {
+        var compName = args.compName || "";
+        var operations = args.operations; // Array of {layerIndex, threeDLayer, position, scale, rotation, opacity, ...}
+
+        if (!operations || !operations.length) {
+            throw new Error("No operations provided. Pass an array of {layerIndex, ...properties}");
+        }
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        var results = [];
+        for (var o = 0; o < operations.length; o++) {
+            var op = operations[o];
+            var layer = null;
+            if (op.layerIndex !== undefined && op.layerIndex !== null) {
+                if (op.layerIndex > 0 && op.layerIndex <= comp.numLayers) { layer = comp.layer(op.layerIndex); }
+                else { results.push({ layerIndex: op.layerIndex, status: "error", message: "Layer index out of bounds" }); continue; }
+            } else if (op.layerName) {
+                for (var j = 1; j <= comp.numLayers; j++) {
+                    if (comp.layer(j).name === op.layerName) { layer = comp.layer(j); break; }
+                }
+            }
+            if (!layer) { results.push({ layerIndex: op.layerIndex, layerName: op.layerName, status: "error", message: "Layer not found" }); continue; }
+
+            var changed = [];
+            if (op.threeDLayer !== undefined && op.threeDLayer !== null) { layer.threeDLayer = !!op.threeDLayer; changed.push("threeDLayer"); }
+            if (op.position !== undefined && op.position !== null) {
+                var posProp = layer.property("Position");
+                if (posProp.numKeys > 0) {
+                    while (posProp.numKeys > 0) { posProp.removeKey(1); }
+                }
+                posProp.setValue(op.position);
+                changed.push("position");
+            }
+            if (op.scale !== undefined && op.scale !== null) { layer.property("Scale").setValue(op.scale); changed.push("scale"); }
+            if (op.rotation !== undefined && op.rotation !== null) {
+                if (layer.threeDLayer) { layer.property("Z Rotation").setValue(op.rotation); }
+                else { layer.property("Rotation").setValue(op.rotation); }
+                changed.push("rotation");
+            }
+            if (op.opacity !== undefined && op.opacity !== null) { layer.property("Opacity").setValue(op.opacity); changed.push("opacity"); }
+            if (op.blendMode !== undefined && op.blendMode !== null) {
+                var bModes = {"normal":BlendingMode.NORMAL,"add":BlendingMode.ADD,"multiply":BlendingMode.MULTIPLY,"screen":BlendingMode.SCREEN,"overlay":BlendingMode.OVERLAY,"softLight":BlendingMode.SOFT_LIGHT,"hardLight":BlendingMode.HARD_LIGHT,"darken":BlendingMode.DARKEN,"lighten":BlendingMode.LIGHTEN,"difference":BlendingMode.DIFFERENCE};
+                if (bModes[op.blendMode] !== undefined) { layer.blendingMode = bModes[op.blendMode]; changed.push("blendMode"); }
+            }
+            if (op.startTime !== undefined && op.startTime !== null) { layer.startTime = op.startTime; changed.push("startTime"); }
+            if (op.outPoint !== undefined && op.outPoint !== null) { layer.outPoint = op.outPoint; changed.push("outPoint"); }
+
+            results.push({
+                layerIndex: layer.index,
+                name: layer.name,
+                status: "success",
+                threeDLayer: layer.threeDLayer,
+                position: layer.property("Position").value,
+                changedProperties: changed
+            });
+        }
+
+        return JSON.stringify({ status: "success", results: results }, null, 2);
+    } catch (error) {
         return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
     }
 }
@@ -435,7 +835,19 @@ function setLayerExpression(compIndex, layerIndex, propertyName, expressionStrin
                  property = layer.property("Effects").property(propertyName);
              } else if (layer.property("Text") && layer.property("Text").property(propertyName)) {
                  property = layer.property("Text").property(propertyName);
-             } // Add more groups if needed
+             }
+
+            // Search inside individual effects for sub-properties
+            if (!property && layer.property("Effects")) {
+                var effects = layer.property("Effects");
+                for (var ei = 1; ei <= effects.numProperties; ei++) {
+                    var eff = effects.property(ei);
+                    try {
+                        var subProp = eff.property(propertyName);
+                        if (subProp) { property = subProp; break; }
+                    } catch (e2) {}
+                }
+            }
 
             if (!property) {
                  return JSON.stringify({ success: false, message: "Property '" + propertyName + "' not found on layer '" + layer.name + "'." });
@@ -552,9 +964,10 @@ function applyEffect(args) {
 // Helper function to apply effect settings
 function applyEffectSettings(effect, settings) {
     // Skip if no settings are provided
-    if (!settings || Object.keys(settings).length === 0) {
-        return;
-    }
+    if (!settings) return;
+    var hasKeys = false;
+    for (var k in settings) { if (settings.hasOwnProperty(k)) { hasKeys = true; break; } }
+    if (!hasKeys) return;
     
     // Iterate through all provided settings
     for (var propName in settings) {
@@ -924,6 +1337,35 @@ function getResultFilePath() {
     return bridgeFolder.fsName + "/ae_mcp_result.json";
 }
 
+// --- setCompositionProperties: set duration, frameRate, etc. on active or named comp ---
+function setCompositionProperties(args) {
+    try {
+        var compName = args.compName || "";
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+        var changed = [];
+        if (args.duration !== undefined && args.duration !== null) { comp.duration = args.duration; changed.push("duration"); }
+        if (args.frameRate !== undefined && args.frameRate !== null) { comp.frameRate = args.frameRate; changed.push("frameRate"); }
+        if (args.width !== undefined && args.width !== null && args.height !== undefined && args.height !== null) {
+            comp.width = args.width; comp.height = args.height; changed.push("dimensions");
+        }
+        return JSON.stringify({
+            status: "success",
+            composition: { name: comp.name, duration: comp.duration, frameRate: comp.frameRate, width: comp.width, height: comp.height },
+            changedProperties: changed
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
 // Functions for each script type
 function getProjectInfo() {
     var project = app.project;
@@ -1040,6 +1482,8 @@ function getLayerInfo() {
             name: layer.name,
             enabled: layer.enabled,
             locked: layer.locked,
+            threeDLayer: layer.threeDLayer,
+            position: layer.property("Position").value,
             inPoint: layer.inPoint,
             outPoint: layer.outPoint
         };
@@ -1053,11 +1497,11 @@ function getLayerInfo() {
 // Execute command
 function executeCommand(command, args) {
     var result = "";
-    
+
     logToPanel("Executing command: " + command);
     statusText.text = "Running: " + command;
     panel.update();
-    
+
     try {
         logToPanel("Attempting to execute: " + command); // Log before switch
         // Use a switch statement for clarity
@@ -1120,6 +1564,36 @@ function executeCommand(command, args) {
                 logToPanel("Calling bridgeTestEffects function...");
                 result = bridgeTestEffects(args);
                 logToPanel("Returned from bridgeTestEffects.");
+                break;
+            case "createCamera":
+                logToPanel("Calling createCamera function...");
+                result = createCamera(args);
+                logToPanel("Returned from createCamera.");
+                break;
+            case "batchSetLayerProperties":
+                logToPanel("Calling batchSetLayerProperties function...");
+                result = batchSetLayerProperties(args);
+                logToPanel("Returned from batchSetLayerProperties.");
+                break;
+            case "setCompositionProperties":
+                logToPanel("Calling setCompositionProperties function...");
+                result = setCompositionProperties(args);
+                logToPanel("Returned from setCompositionProperties.");
+                break;
+            case "duplicateLayer":
+                logToPanel("Calling duplicateLayer function...");
+                result = duplicateLayer(args);
+                logToPanel("Returned from duplicateLayer.");
+                break;
+            case "deleteLayer":
+                logToPanel("Calling deleteLayer function...");
+                result = deleteLayer(args);
+                logToPanel("Returned from deleteLayer.");
+                break;
+            case "setLayerMask":
+                logToPanel("Calling setLayerMask function...");
+                result = setLayerMask(args);
+                logToPanel("Returned from setLayerMask.");
                 break;
             default:
                 result = JSON.stringify({ error: "Unknown command: " + command });
@@ -1296,3 +1770,4 @@ startCommandChecker();
 // Show the panel
 panel.center();
 panel.show();
+
