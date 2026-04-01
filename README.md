@@ -43,20 +43,11 @@
 - **Create text layers** with customizable properties (font, size, color, position)
 - **Create shape layers** (rectangle, ellipse, polygon, star) with colors and strokes
 - **Create solid/adjustment layers** for backgrounds and effects
-- **Create camera layers** with configurable zoom and position
-- **Create null objects** for animation control
-- **Modify layer properties** like position, scale, rotation, opacity, timing
-- **Toggle 2D/3D mode** for layers
-- **Set blend modes** (normal, multiply, screen, etc.)
-- **Track matte** support (alpha, luma, inverted)
-- **Duplicate layers** with optional rename
-- **Delete layers** from composition
-- **Create/modify masks** with feather, expansion, and opacity
+- **Modify layer properties** like position, scale, rotation, opacity, and timing
 
 ### 🌀 Animation Capabilities
 - **Set keyframes** for layer properties (Position, Scale, Rotation, Opacity, etc.)
 - **Apply expressions** to layer properties for dynamic animations
-- **Batch set properties** across multiple layers at once
 
 ## ⚙️ Setup Instructions
 
@@ -97,22 +88,7 @@
 
 ### 🔧 Update MCP Config
 
-#### Option 1: Using .mcp.json (Recommended for Claude Code)
-The repository includes a `.mcp.json` file for easy configuration. Copy or reference it in your MCP settings:
-
-```json
-{
-  "mcpServers": {
-    "AfterEffectsMCP": {
-      "command": "node",
-      "args": ["PATH/TO/after-effects-mcp/build/index.js"]
-    }
-  }
-}
-```
-
-#### Option 2: Manual Configuration
-Go to your client (e.g., Claude or Cursor) and update your config file:
+Go to your client (eg. Claude or Cursor ) and update your config file
 
 ```json
 {
@@ -199,22 +175,14 @@ You can animate layers with:
 
 ## 🛠 Available MCP Tools
 
-| Command                     | Description                            |
-|-----------------------------|----------------------------------------|
-| `create-composition`        | Create a new composition               |
-| `run-script`                | Run a JS script inside AE              |
-| `get-results`               | Get script results                     |
-| `get-help`                  | Help for available commands            |
-| `setLayerKeyframe`          | Add keyframe to layer property         |
-| `setLayerExpression`        | Add/remove expressions from properties|
-| `setLayerProperties`        | Set layer properties (position, scale, rotation, opacity, blendMode, threeDLayer, trackMatteType, enabled, etc.) |
-| `batchSetLayerProperties`  | Apply properties to multiple layers   |
-| `getLayerInfo`              | Get layer info (position, 3D status)  |
-| `createCamera`              | Create camera layer                   |
-| `createNullObject`          | Create null object for animation      |
-| `duplicateLayer`            | Duplicate a layer                     |
-| `deleteLayer`               | Delete a layer                        |
-| `setLayerMask`              | Create/modify layer masks             |
+| Command              | Description                            |
+|----------------------|----------------------------------------|
+| \`create-composition\` | Create a new comp                      |
+| \`run-script\`         | Run a JS script inside AE              |
+| \`get-results\`        | Get script results                     |
+| \`get-help\`           | Help for available commands            |
+| \`setLayerKeyframe\`   | Add keyframe to layer property         |
+| \`setLayerExpression\` | Add/remove expressions from properties |
 
 ## 👨‍💻 For Developers
 
@@ -231,8 +199,6 @@ npm run build
 # or
 yarn build
 ```
-
-**Note:** This project uses esbuild for fast builds, replacing the previous TypeScript compiler approach that could run out of memory on larger codebases.
 
 ### 🤝 Contributing
 
