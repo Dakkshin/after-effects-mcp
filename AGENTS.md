@@ -21,7 +21,12 @@ The goal is simple: a new agent should not need to learn the repo from zero befo
   - `npm start`
   - `npm run install-bridge`
 - This setup assumes Adobe After Effects is installed on the local machine.
-- Some actions may be more reliable through direct ExtendScript execution against `AfterFX.com` than through the bridge.
+- The normal execution path is:
+  - Codex calls the local MCP server
+  - the MCP server writes command files into `~/Documents/ae-mcp-bridge`
+  - the `mcp-bridge-auto.jsx` ScriptUI panel running inside After Effects polls that folder
+  - After Effects executes the queued script and writes the result back
+- This repo is designed around the Bridge panel workflow, not around manually launching After Effects from scratch for normal tasks.
 
 This means the agent does not need to inspect the repo just to determine whether AE control is available. It is available in this project.
 
@@ -35,6 +40,8 @@ This means the agent does not need to inspect the repo just to determine whether
 - If a request is ambiguous but a safe default exists, use the default and proceed.
 - If a request depends on current project state, inspect the active AE project instead of guessing.
 - Do not inspect unrelated repo files just to rediscover the normal AE workflow.
+- Do not search for After Effects installations or launch the app manually unless the user explicitly asks for that.
+- Assume the user is already working with an AE session that should be controlled through the bridge.
 
 ## What This File Replaces
 
@@ -63,10 +70,17 @@ That is project-state inspection, not repo-learning.
 ## Preferred Execution Style
 
 - For deterministic timeline actions, direct scripting is acceptable.
-- For reusable repo-supported actions, prefer the AE MCP server workflow.
+- For reusable repo-supported actions, prefer the AE MCP server workflow through the running bridge panel.
 - For user-facing results, do the work first, then report what changed.
 - Avoid asking for confirmation when the target comp or layer can be discovered safely.
 - If the request is routine and executable, act first instead of proposing a plan.
+
+## AE Access Rule
+
+- Do not treat this repo as a desktop automation task that requires finding and opening After Effects manually.
+- Normal access to AE in this repo happens through `mcp-bridge-auto.jsx`, which runs inside an already available After Effects session.
+- If AE control fails, first suspect that the bridge panel is not installed, not open, or not polling correctly.
+- Only move into installation or app-launch steps if the user explicitly asks for setup help or if the task is specifically about fixing the bridge connection.
 
 ## When To Inspect Before Acting
 
