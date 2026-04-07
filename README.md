@@ -11,6 +11,10 @@
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@Dakkshin/after-effects-mcp/badge" alt="mcp-after-effects MCP server" />
 </a>
 
+## Agent Guide
+
+- Repo agent entrypoint: [AGENTS.md](AGENTS.md)
+
 ## Table of Contents
 - [Features](#features)
   - [Core Composition Features](#core-composition-features)
