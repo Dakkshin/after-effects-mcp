@@ -7,6 +7,17 @@
 
 ✨ A Model Context Protocol (MCP) server for Adobe After Effects that enables AI assistants and other applications to control After Effects through a standardized protocol.
 
+## Custom Repo Note
+
+This is a working custom fork maintained for my own After Effects workflow.
+
+Changes in this repo include:
+- an [AGENTS.md](AGENTS.md) operating guide so new agent sessions can start faster and spend fewer tokens on repo rediscovery
+- workflow guidance tuned for bridge-first execution
+- practical support notes for Adobe After Effects `17.7` / `Adobe After Effects 2020`
+
+For this repo, treat `AGENTS.md` as the primary session-start guide for AI agents.
+
 <a href="https://glama.ai/mcp/servers/@Dakkshin/after-effects-mcp">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@Dakkshin/after-effects-mcp/badge" alt="mcp-after-effects MCP server" />
 </a>
@@ -65,7 +76,7 @@
 ## ⚙️ Setup Instructions
 
 ### 🛠 Prerequisites
-- Adobe After Effects (2022 or later)
+- Adobe After Effects `17.7` / `Adobe After Effects 2020`
 - Node.js (v14 or later)
 - npm or yarn package manager
 
@@ -73,7 +84,7 @@
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/Dakkshin/after-effects-mcp.git
+   git clone https://github.com/miomuhammad/after-effects-mcp.git
    cd after-effects-mcp
    ```
 
@@ -139,6 +150,8 @@ Go to your client (e.g., Claude or Cursor) and update your config file:
    ```
 
 2. **Open After Effects**
+
+   This repo is currently used against Adobe After Effects `17.7` / `2020`.
 
 3. **Open the MCP Bridge Auto panel**
    - In After Effects, go to Window > mcp-bridge-auto.jsx
