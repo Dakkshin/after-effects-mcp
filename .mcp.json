@@ -2,7 +2,7 @@
   "mcpServers": {
     "AfterEffectsMCP": {
       "command": "node",
-      "args": ["C:\\Users\\Daniel\\Downloads\\after-effects-mcp\\build\\index.js"]
+      "args": ["C:\\Users\\orely\\OneDrive\\Documents\\2. PRACTICE\\VScode\\AFTER EFFECT\\AE MCP\\after-effects-mcp\\build\\index.js"]
     }
   }
 }

@@ -1285,33 +1285,62 @@ if (typeof JSON.stringify !== "function") {
 var aeVersion = parseFloat(app.version);
 var isAE2025OrLater = aeVersion >= 25.0;
 
-// Always create a floating palette window for AE 2025+
-var panel = new Window("palette", "MCP Bridge Auto", undefined);
-panel.orientation = "column";
-panel.alignChildren = ["fill", "top"];
-panel.spacing = 10;
-panel.margins = 16;
+function createBridgeUI(thisObj) {
+    var useDockablePanel = (thisObj instanceof Panel) && !isAE2025OrLater;
+    var bridgePanel = useDockablePanel
+        ? thisObj
+        : new Window("palette", "MCP Bridge Auto", undefined, { resizeable: true });
 
-// Status display
-var statusText = panel.add("statictext", undefined, "Waiting for commands...");
-statusText.alignment = ["fill", "top"];
+    if (!bridgePanel) {
+        throw new Error("Failed to create MCP Bridge UI.");
+    }
 
-// Add log area
-var logPanel = panel.add("panel", undefined, "Command Log");
-logPanel.orientation = "column";
-logPanel.alignChildren = ["fill", "fill"];
-var logText = logPanel.add("edittext", undefined, "", {multiline: true, readonly: true});
-logText.preferredSize.height = 200;
+    bridgePanel.orientation = "column";
+    bridgePanel.alignChildren = ["fill", "top"];
+    bridgePanel.spacing = 10;
+    bridgePanel.margins = 16;
 
-// AE 2025 warning
-if (isAE2025OrLater) {
-    var warning = panel.add("statictext", undefined, "AE 2025+: Dockable panels are not supported. Floating window only.");
-    warning.graphics.foregroundColor = warning.graphics.newPen(warning.graphics.PenType.SOLID_COLOR, [1,0.3,0,1], 1);
+    // Status display
+    statusText = bridgePanel.add("statictext", undefined, "Waiting for commands...");
+    statusText.alignment = ["fill", "top"];
+
+    // Add log area
+    var logPanel = bridgePanel.add("panel", undefined, "Command Log");
+    logPanel.orientation = "column";
+    logPanel.alignChildren = ["fill", "fill"];
+    logText = logPanel.add("edittext", undefined, "", {multiline: true, readonly: true});
+    logText.preferredSize.height = 200;
+
+    if (isAE2025OrLater) {
+        var warning = bridgePanel.add("statictext", undefined, "AE 2025+: Dockable panels are not supported. Floating window only.");
+        warning.graphics.foregroundColor = warning.graphics.newPen(warning.graphics.PenType.SOLID_COLOR, [1, 0.3, 0, 1], 1);
+    } else if (useDockablePanel) {
+        bridgePanel.add("statictext", undefined, "Dockable panel mode enabled.");
+    }
+
+    autoRunCheckbox = bridgePanel.add("checkbox", undefined, "Auto-run commands");
+    autoRunCheckbox.value = true;
+
+    var checkButton = bridgePanel.add("button", undefined, "Check for Commands Now");
+    checkButton.onClick = function() {
+        logToPanel("Manually checking for commands");
+        checkForCommands();
+    };
+
+    bridgePanel.onResizing = bridgePanel.onResize = function() {
+        this.layout.resize();
+    };
+
+    bridgePanel.layout.layout(true);
+    return bridgePanel;
 }
 
-// Auto-run checkbox
-var autoRunCheckbox = panel.add("checkbox", undefined, "Auto-run commands");
-autoRunCheckbox.value = true;
+var panel = null;
+var statusText = null;
+var logText = null;
+var autoRunCheckbox = null;
+
+panel = createBridgeUI(this);
 
 // Check interval (ms)
 var checkInterval = 2000;
@@ -1752,15 +1781,10 @@ function startCommandChecker() {
     app.scheduleTask("checkForCommands()", checkInterval, true);
 }
 
-// Add manual check button
-var checkButton = panel.add("button", undefined, "Check for Commands Now");
-checkButton.onClick = function() {
-    logToPanel("Manually checking for commands");
-    checkForCommands();
-};
-
 // Log startup
 logToPanel("MCP Bridge Auto started");
+logToPanel("After Effects version: " + app.version);
+logToPanel("UI mode: " + ((panel instanceof Panel) ? "dockable panel" : "floating palette"));
 logToPanel("Command file: " + getCommandFilePath());
 statusText.text = "Ready - Auto-run is " + (autoRunCheckbox.value ? "ON" : "OFF");
 
@@ -1768,6 +1792,11 @@ statusText.text = "Ready - Auto-run is " + (autoRunCheckbox.value ? "ON" : "OFF"
 startCommandChecker();
 
 // Show the panel
-panel.center();
-panel.show();
+if (panel instanceof Window) {
+    panel.center();
+    panel.show();
+} else {
+    panel.layout.layout(true);
+    panel.layout.resize();
+}
 
