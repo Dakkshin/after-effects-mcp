@@ -1529,7 +1529,7 @@ function executeCommand(command, args) {
 
     logToPanel("Executing command: " + command);
     statusText.text = "Running: " + command;
-    panel.update();
+    refreshPanelUI();
 
     try {
         logToPanel("Attempting to execute: " + command); // Log before switch
@@ -1739,6 +1739,16 @@ function updateCommandStatus(status) {
 function logToPanel(message) {
     var timestamp = new Date().toLocaleTimeString();
     logText.text = timestamp + ": " + message + "\n" + logText.text;
+    refreshPanelUI();
+}
+
+function refreshPanelUI() {
+    try {
+        if (panel && panel.layout) {
+            panel.layout.layout(true);
+            panel.layout.resize();
+        }
+    } catch (e) {}
 }
 
 // Check for new commands

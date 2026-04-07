@@ -21,12 +21,50 @@ const __dirname = path.dirname(__filename);
 const SCRIPTS_DIR = path.join(__dirname, "scripts");
 const TEMP_DIR = path.join(__dirname, "temp");
 
-// Get the correct directory for AE bridge files
-// Use ~/Documents/ae-mcp-bridge for reliable cross-process access
-function getAETempDir(): string {
+function resolveWindowsDocumentsDir(): string | null {
+  if (process.platform !== "win32") {
+    return null;
+  }
+
+  try {
+    const output = execSync(
+      'reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders" /v Personal',
+      { encoding: "utf8" }
+    );
+    const match = output.match(/Personal\s+REG_\w+\s+([^\r\n]+)/);
+    if (match?.[1]) {
+      const expanded = match[1].replace(/%([^%]+)%/g, (_, name) => process.env[name] || `%${name}%`);
+      return path.resolve(expanded.trim());
+    }
+  } catch (error) {
+    console.error("Failed to resolve Documents path from registry:", error);
+  }
+
+  return null;
+}
+
+function resolveDocumentsDir(): string {
   const homeDir = os.homedir();
-  const bridgeDir = path.join(homeDir, 'Documents', 'ae-mcp-bridge');
-  // Ensure the directory exists
+  const candidates = [
+    resolveWindowsDocumentsDir(),
+    process.env.OneDriveCommercial ? path.join(process.env.OneDriveCommercial, "Documents") : null,
+    process.env.OneDriveConsumer ? path.join(process.env.OneDriveConsumer, "Documents") : null,
+    process.env.OneDrive ? path.join(process.env.OneDrive, "Documents") : null,
+    path.join(homeDir, "Documents")
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return candidates[0];
+}
+
+// Get the correct directory for AE bridge files
+function getAETempDir(): string {
+  const bridgeDir = path.join(resolveDocumentsDir(), "ae-mcp-bridge");
   if (!fs.existsSync(bridgeDir)) {
     fs.mkdirSync(bridgeDir, { recursive: true });
   }
