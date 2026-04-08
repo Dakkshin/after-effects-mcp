@@ -135,6 +135,7 @@ try {
       fs.copyFileSync(sourceScript, destinationScript);
     } catch {
       const tempScriptPath = path.join(__dirname, 'install-bridge-elevated.ps1');
+      const tempLauncherPath = path.join(__dirname, 'install-bridge-launcher.ps1');
       const elevatedScript = [
         '$ErrorActionPreference = "Stop"',
         `Copy-Item -LiteralPath '${escapePowerShellString(sourceScript)}' -Destination '${escapePowerShellString(destinationScript)}' -Force`,
@@ -144,17 +145,21 @@ try {
       fs.writeFileSync(tempScriptPath, elevatedScript, 'utf8');
 
       try {
-        const startProcessCommand = [
+        const launcherScript = [
           '$ErrorActionPreference = "Stop"',
           `$proc = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','${escapePowerShellString(tempScriptPath)}','${escapePowerShellString(sourceScript)}','${escapePowerShellString(destinationScript)}')`,
           'if ($null -eq $proc) { throw "Failed to start elevated PowerShell process." }',
           'if ($proc.ExitCode -ne 0) { throw "Elevated copy failed with exit code $($proc.ExitCode)." }'
-        ].join('; ');
+        ].join('\r\n');
 
-        execSync(`powershell -NoProfile -Command "${startProcessCommand}"`, { stdio: 'inherit' });
+        fs.writeFileSync(tempLauncherPath, launcherScript, 'utf8');
+        execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${tempLauncherPath}"`, { stdio: 'inherit' });
       } finally {
         if (fs.existsSync(tempScriptPath)) {
           fs.unlinkSync(tempScriptPath);
+        }
+        if (fs.existsSync(tempLauncherPath)) {
+          fs.unlinkSync(tempLauncherPath);
         }
       }
     }

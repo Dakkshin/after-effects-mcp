@@ -12,6 +12,957 @@
 
 // --- Function Definitions ---
 
+function hasValue(value) {
+    return value !== undefined && value !== null && value !== "";
+}
+
+function padNumber(value, length) {
+    var text = String(value);
+    while (text.length < length) {
+        text = "0" + text;
+    }
+    return text;
+}
+
+function getIsoTimestamp() {
+    var now = new Date();
+    return now.getUTCFullYear() + "-" +
+        padNumber(now.getUTCMonth() + 1, 2) + "-" +
+        padNumber(now.getUTCDate(), 2) + "T" +
+        padNumber(now.getUTCHours(), 2) + ":" +
+        padNumber(now.getUTCMinutes(), 2) + ":" +
+        padNumber(now.getUTCSeconds(), 2) + "." +
+        padNumber(now.getUTCMilliseconds(), 3) + "Z";
+}
+
+function getActiveComp() {
+    if (app.project.activeItem instanceof CompItem) {
+        return app.project.activeItem;
+    }
+    return null;
+}
+
+function findProjectItemIndexById(itemId) {
+    for (var i = 1; i <= app.project.numItems; i++) {
+        var item = app.project.item(i);
+        if (item && item.id === itemId) {
+            return i;
+        }
+    }
+    return null;
+}
+
+function getProjectItemType(item) {
+    if (!item) {
+        return "Unknown";
+    }
+    if (item instanceof CompItem) {
+        return "Composition";
+    }
+    if (item instanceof FolderItem) {
+        return "Folder";
+    }
+    if (item instanceof FootageItem) {
+        if (item.mainSource instanceof SolidSource) {
+            return "Solid";
+        }
+        return "Footage";
+    }
+    return "Unknown";
+}
+
+function buildProjectItemSummary(item) {
+    if (!item) {
+        return null;
+    }
+
+    var summary = {
+        id: item.id,
+        index: findProjectItemIndexById(item.id),
+        name: item.name,
+        type: getProjectItemType(item)
+    };
+
+    if (item instanceof CompItem) {
+        summary.width = item.width;
+        summary.height = item.height;
+        summary.duration = item.duration;
+        summary.frameRate = item.frameRate;
+        summary.numLayers = item.numLayers;
+    } else if (item instanceof FootageItem) {
+        try {
+            summary.width = item.width;
+            summary.height = item.height;
+            summary.duration = item.duration;
+        } catch (footageError) {}
+    }
+
+    return summary;
+}
+
+function buildCompSummary(comp) {
+    if (!comp) {
+        return null;
+    }
+    return {
+        id: comp.id,
+        index: findProjectItemIndexById(comp.id),
+        name: comp.name,
+        width: comp.width,
+        height: comp.height,
+        duration: comp.duration,
+        frameRate: comp.frameRate
+    };
+}
+
+function buildLayerSummary(layer) {
+    if (!layer) {
+        return null;
+    }
+    return {
+        index: layer.index,
+        name: layer.name
+    };
+}
+
+function getLayerType(layer) {
+    if (!layer) {
+        return "unknown";
+    }
+    try {
+        if (layer instanceof CameraLayer) {
+            return "camera";
+        }
+    } catch (cameraErr) {}
+    try {
+        if (layer instanceof LightLayer) {
+            return "light";
+        }
+    } catch (lightErr) {}
+    try {
+        if (layer instanceof ShapeLayer) {
+            return "shape";
+        }
+    } catch (shapeErr) {}
+    try {
+        if (layer instanceof TextLayer) {
+            return "text";
+        }
+    } catch (textErr) {}
+    if (layer.nullLayer === true) {
+        return "null";
+    }
+    if (layer.adjustmentLayer === true) {
+        return "adjustment";
+    }
+    if (layer.source && layer.source.mainSource instanceof SolidSource) {
+        return "solid";
+    }
+    if (layer.source) {
+        return "av";
+    }
+    return "layer";
+}
+
+function buildEffectsSummary(layer) {
+    var result = [];
+    var parade = getEffectParade(layer);
+    if (!parade) {
+        return result;
+    }
+    for (var i = 1; i <= parade.numProperties; i++) {
+        var fx = parade.property(i);
+        result.push({
+            index: fx.propertyIndex,
+            name: fx.name,
+            matchName: fx.matchName
+        });
+    }
+    return result;
+}
+
+function buildMasksSummary(layer) {
+    var result = [];
+    var masks = null;
+    try {
+        masks = layer.property("Masks");
+    } catch (e) {
+        masks = null;
+    }
+    if (!masks) {
+        return result;
+    }
+    for (var i = 1; i <= masks.numProperties; i++) {
+        var mask = masks.property(i);
+        result.push({
+            index: mask.propertyIndex,
+            name: mask.name,
+            mode: mask.maskMode
+        });
+    }
+    return result;
+}
+
+function buildTransformSummary(layer) {
+    var transform = null;
+    try {
+        transform = layer.property("ADBE Transform Group") || layer.property("Transform");
+    } catch (e) {
+        transform = null;
+    }
+    if (!transform) {
+        return null;
+    }
+
+    function readTransformValue(name) {
+        try {
+            var prop = transform.property(name);
+            return prop ? prop.value : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    return {
+        anchorPoint: readTransformValue("Anchor Point"),
+        position: readTransformValue("Position"),
+        scale: readTransformValue("Scale"),
+        rotation: readTransformValue("Rotation"),
+        opacity: readTransformValue("Opacity")
+    };
+}
+
+function buildLayerDetails(layer) {
+    if (!layer) {
+        return null;
+    }
+
+    var details = {
+        index: layer.index,
+        name: layer.name,
+        type: getLayerType(layer),
+        enabled: layer.enabled,
+        locked: layer.locked,
+        shy: layer.shy,
+        solo: layer.solo,
+        motionBlur: layer.motionBlur,
+        adjustmentLayer: layer.adjustmentLayer === true,
+        threeDLayer: layer.threeDLayer === true,
+        nullLayer: layer.nullLayer === true,
+        guideLayer: layer.guideLayer === true,
+        label: layer.label,
+        inPoint: layer.inPoint,
+        outPoint: layer.outPoint,
+        startTime: layer.startTime,
+        stretch: layer.stretch,
+        parent: layer.parent ? buildLayerSummary(layer.parent) : null,
+        transform: buildTransformSummary(layer),
+        masks: buildMasksSummary(layer),
+        effects: buildEffectsSummary(layer)
+    };
+
+    try {
+        if (layer.source) {
+            details.source = buildProjectItemSummary(layer.source);
+        }
+    } catch (sourceError) {}
+
+    try {
+        if (layer instanceof TextLayer && layer.property("Source Text")) {
+            details.text = {
+                expressionEnabled: layer.property("Source Text").expressionEnabled,
+                expressionError: layer.property("Source Text").expressionError || "",
+                expressionLength: layer.property("Source Text").expression ? layer.property("Source Text").expression.length : 0
+            };
+        }
+    } catch (textError) {}
+
+    return details;
+}
+
+function findCompositionsByName(name) {
+    var matches = [];
+    if (!hasValue(name)) {
+        return matches;
+    }
+    for (var i = 1; i <= app.project.numItems; i++) {
+        var item = app.project.item(i);
+        if (item instanceof CompItem && item.name === name) {
+            matches.push(item);
+        }
+    }
+    return matches;
+}
+
+function resolveComposition(args) {
+    args = args || {};
+    var targetComp = args.targetComp || null;
+    var compIndex = args.compIndex;
+    var compName = args.compName || "";
+
+    if (targetComp && targetComp.mode) {
+        if (targetComp.mode === "index" && hasValue(targetComp.index)) {
+            compIndex = targetComp.index;
+        } else if (targetComp.mode === "name" && hasValue(targetComp.name)) {
+            compName = targetComp.name;
+        }
+    }
+
+    if (hasValue(compIndex)) {
+        var indexedComp = app.project.item(compIndex);
+        if (!indexedComp || !(indexedComp instanceof CompItem)) {
+            throw new Error("Composition not found at index " + compIndex);
+        }
+        return indexedComp;
+    }
+
+    if (hasValue(compName)) {
+        var matches = findCompositionsByName(compName);
+        if (matches.length === 1) {
+            return matches[0];
+        }
+        if (matches.length > 1) {
+            throw new Error("Composition name is ambiguous: '" + compName + "'");
+        }
+        throw new Error("No composition found with name '" + compName + "'");
+    }
+
+    var activeComp = getActiveComp();
+    if (activeComp) {
+        return activeComp;
+    }
+
+    throw new Error("No active composition");
+}
+
+function activateComposition(comp) {
+    if (!comp) {
+        throw new Error("Composition is required");
+    }
+    comp.openInViewer();
+    return comp;
+}
+
+function findLayersByName(comp, layerName) {
+    var matches = [];
+    if (!comp || !hasValue(layerName)) {
+        return matches;
+    }
+    for (var i = 1; i <= comp.numLayers; i++) {
+        var layer = comp.layer(i);
+        if (layer && layer.name === layerName) {
+            matches.push(layer);
+        }
+    }
+    return matches;
+}
+
+function getSelectedLayersForComp(comp) {
+    var activeComp = getActiveComp();
+    if (!activeComp || activeComp.id !== comp.id) {
+        return [];
+    }
+    return activeComp.selectedLayers || [];
+}
+
+function resolveSingleLayerInComp(comp, args) {
+    args = args || {};
+    var targetLayer = args.targetLayer || null;
+    var targetLayers = args.targetLayers || null;
+    var layerIndex = args.layerIndex;
+    var layerName = args.layerName || "";
+    var useSelectedLayer = args.useSelectedLayer === true;
+
+    if (targetLayer && targetLayer.mode) {
+        if (targetLayer.mode === "index" && hasValue(targetLayer.index)) {
+            layerIndex = targetLayer.index;
+        } else if (targetLayer.mode === "name" && hasValue(targetLayer.name)) {
+            layerName = targetLayer.name;
+        } else if (targetLayer.mode === "selected") {
+            useSelectedLayer = true;
+        }
+    }
+
+    if (targetLayers && targetLayers.mode) {
+        if (targetLayers.mode === "selected") {
+            useSelectedLayer = true;
+        } else if (targetLayers.mode === "names" && targetLayers.names && targetLayers.names.length === 1) {
+            layerName = targetLayers.names[0];
+        }
+    }
+
+    if (hasValue(layerIndex)) {
+        if (layerIndex > 0 && layerIndex <= comp.numLayers) {
+            return comp.layer(layerIndex);
+        }
+        throw new Error("Layer index out of bounds: " + layerIndex);
+    }
+
+    if (useSelectedLayer) {
+        var selectedLayers = getSelectedLayersForComp(comp);
+        if (!selectedLayers.length) {
+            throw new Error("No selected layer in the active composition");
+        }
+        if (selectedLayers.length > 1) {
+            throw new Error("Selected layer target is ambiguous; multiple layers are selected");
+        }
+        return selectedLayers[0];
+    }
+
+    if (hasValue(layerName)) {
+        var matches = findLayersByName(comp, layerName);
+        if (matches.length === 1) {
+            return matches[0];
+        }
+        if (matches.length > 1) {
+            throw new Error("Layer name is ambiguous: '" + layerName + "'");
+        }
+        throw new Error("Layer not found: " + layerName);
+    }
+
+    throw new Error("No target layer provided");
+}
+
+function sortLayersByStackOrder(layers) {
+    return layers.sort(function(a, b) {
+        return a.index - b.index;
+    });
+}
+
+function resolveMultipleLayersInComp(comp, args) {
+    args = args || {};
+    var targetLayers = args.targetLayers || null;
+    var layerNames = args.layerNames || null;
+    var useSelectedLayers = args.useSelectedLayers === true;
+    var resolved = [];
+    var seen = {};
+
+    if (targetLayers && targetLayers.mode) {
+        if (targetLayers.mode === "selected") {
+            useSelectedLayers = true;
+        } else if (targetLayers.mode === "names" && targetLayers.names && targetLayers.names.length) {
+            layerNames = targetLayers.names;
+        }
+    }
+
+    if (useSelectedLayers) {
+        var selectedLayers = getSelectedLayersForComp(comp);
+        if (!selectedLayers.length) {
+            throw new Error("No selected layers in the active composition");
+        }
+        for (var i = 0; i < selectedLayers.length; i++) {
+            resolved.push(selectedLayers[i]);
+            seen[selectedLayers[i].index] = true;
+        }
+    }
+
+    if (layerNames && layerNames.length) {
+        for (var n = 0; n < layerNames.length; n++) {
+            var matches = findLayersByName(comp, layerNames[n]);
+            if (!matches.length) {
+                throw new Error("Layer not found: " + layerNames[n]);
+            }
+            if (matches.length > 1) {
+                throw new Error("Layer name is ambiguous: '" + layerNames[n] + "'");
+            }
+            if (!seen[matches[0].index]) {
+                resolved.push(matches[0]);
+                seen[matches[0].index] = true;
+            }
+        }
+    }
+
+    if (!resolved.length) {
+        throw new Error("No target layers resolved");
+    }
+
+    return resolved;
+}
+
+function resolveLayersByIndexes(comp, layerIndexes) {
+    var resolved = [];
+    var seen = {};
+    if (!layerIndexes || !layerIndexes.length) {
+        return resolved;
+    }
+    for (var i = 0; i < layerIndexes.length; i++) {
+        var layerIndex = parseInt(layerIndexes[i], 10);
+        if (isNaN(layerIndex) || layerIndex < 1 || layerIndex > comp.numLayers) {
+            throw new Error("Layer index out of bounds: " + layerIndexes[i]);
+        }
+        if (!seen[layerIndex]) {
+            resolved.push(comp.layer(layerIndex));
+            seen[layerIndex] = true;
+        }
+    }
+    return resolved;
+}
+
+function resolvePropertyOnLayer(layer, propertyName) {
+    if (!layer) {
+        throw new Error("Layer is required to resolve property");
+    }
+    if (!hasValue(propertyName)) {
+        throw new Error("Property name is required");
+    }
+
+    var transformGroup = layer.property("Transform");
+    var property = transformGroup ? transformGroup.property(propertyName) : null;
+
+    if (!property && layer.property("Effects") && layer.property("Effects").property(propertyName)) {
+        property = layer.property("Effects").property(propertyName);
+    }
+    if (!property && layer.property("Text") && layer.property("Text").property(propertyName)) {
+        property = layer.property("Text").property(propertyName);
+    }
+    if (!property && layer.property("Effects")) {
+        var effects = layer.property("Effects");
+        for (var ei = 1; ei <= effects.numProperties; ei++) {
+            var effect = effects.property(ei);
+            try {
+                var subProp = effect.property(propertyName);
+                if (subProp) {
+                    property = subProp;
+                    break;
+                }
+            } catch (nestedError) {}
+        }
+    }
+
+    if (!property) {
+        throw new Error("Property '" + propertyName + "' not found on layer '" + layer.name + "'");
+    }
+
+    return property;
+}
+
+function inferCreatedItems(command, resultObj) {
+    var created = [];
+    if (!resultObj) {
+        return created;
+    }
+    if (command === "createComposition" && resultObj.composition) {
+        created.push({ type: "composition", name: resultObj.composition.name });
+    }
+    if ((command === "createTextLayer" || command === "createShapeLayer" || command === "createSolidLayer" || command === "createCamera") && resultObj.layer) {
+        created.push({ type: "layer", name: resultObj.layer.name, index: resultObj.layer.index });
+    }
+    if (command === "setLayerMask" && resultObj.mask) {
+        created.push({ type: "mask", name: resultObj.mask.name, index: resultObj.mask.index });
+    }
+    return created;
+}
+
+function inferChangedItems(resultObj) {
+    if (!resultObj) {
+        return [];
+    }
+    if (resultObj.changed) {
+        return resultObj.changed;
+    }
+    if (resultObj.changedProperties) {
+        return resultObj.changedProperties;
+    }
+    if (resultObj.layer && resultObj.layer.changedProperties) {
+        return resultObj.layer.changedProperties;
+    }
+    return [];
+}
+
+function buildTargetSummary(args, resultObj) {
+    var target = {};
+    if (resultObj && resultObj.target) {
+        return resultObj.target;
+    }
+    if (resultObj && resultObj.composition) {
+        target.composition = resultObj.composition;
+    } else if (args && (hasValue(args.compName) || hasValue(args.compIndex))) {
+        target.composition = {};
+        if (hasValue(args.compName)) {
+            target.composition.name = args.compName;
+        }
+        if (hasValue(args.compIndex)) {
+            target.composition.index = args.compIndex;
+        }
+    }
+    if (resultObj && resultObj.layer) {
+        target.layer = { name: resultObj.layer.name, index: resultObj.layer.index };
+    } else if (args && (hasValue(args.layerName) || hasValue(args.layerIndex) || args.useSelectedLayer === true)) {
+        target.layer = {};
+        if (hasValue(args.layerName)) {
+            target.layer.name = args.layerName;
+        }
+        if (hasValue(args.layerIndex)) {
+            target.layer.index = args.layerIndex;
+        }
+        if (args.useSelectedLayer === true) {
+            target.layer.mode = "selected";
+        }
+    }
+    if (args && hasValue(args.propertyName)) {
+        target.property = args.propertyName;
+    }
+    for (var key in target) {
+        if (target.hasOwnProperty(key)) {
+            return target;
+        }
+    }
+    return null;
+}
+
+function normalizeCommandResult(command, args, commandData, rawResult) {
+    var resultObj = null;
+    if (typeof rawResult === "string") {
+        try {
+            resultObj = JSON.parse(rawResult);
+        } catch (parseError) {
+            resultObj = { status: "success", message: rawResult };
+        }
+    } else if (rawResult && typeof rawResult === "object") {
+        resultObj = rawResult;
+    } else {
+        resultObj = { status: "success", message: String(rawResult) };
+    }
+
+    if (resultObj.success !== undefined && resultObj.status === undefined) {
+        resultObj.status = resultObj.success ? "success" : "error";
+    }
+    if (!resultObj.status) {
+        resultObj.status = "success";
+    }
+    if (!resultObj.message && resultObj.error) {
+        resultObj.message = resultObj.error;
+    }
+
+    resultObj.command = command;
+    resultObj.commandId = commandData && commandData.commandId ? commandData.commandId : (args && args.commandId ? args.commandId : null);
+    resultObj.target = buildTargetSummary(args, resultObj);
+    resultObj.changed = inferChangedItems(resultObj);
+    resultObj.created = inferCreatedItems(command, resultObj);
+    resultObj.warnings = resultObj.warnings || [];
+    resultObj.timestamp = getIsoTimestamp();
+    resultObj._responseTimestamp = resultObj.timestamp;
+    resultObj._commandExecuted = command;
+    resultObj._commandId = resultObj.commandId;
+
+    return JSON.stringify(resultObj, null, 2);
+}
+
+function buildLayerListSummary(layers) {
+    var result = [];
+    for (var i = 0; i < layers.length; i++) {
+        result.push(buildLayerSummary(layers[i]));
+    }
+    return result;
+}
+
+function getEffectParade(layer) {
+    try {
+        return layer.property("ADBE Effect Parade") || layer.property("Effects");
+    } catch (e) {
+        return null;
+    }
+}
+
+function findEffectByName(layer, effectName) {
+    var parade = getEffectParade(layer);
+    if (!parade) {
+        return null;
+    }
+    for (var i = 1; i <= parade.numProperties; i++) {
+        var fx = parade.property(i);
+        if (fx && fx.name === effectName) {
+            return fx;
+        }
+    }
+    return null;
+}
+
+function ensureNamedEffect(layer, matchName, effectName) {
+    var parade = getEffectParade(layer);
+    if (!parade) {
+        throw new Error("No effect parade on layer '" + layer.name + "'");
+    }
+    var existing = findEffectByName(layer, effectName);
+    if (existing) {
+        if (existing.matchName !== matchName) {
+            throw new Error("Effect name conflict on layer '" + layer.name + "': " + effectName);
+        }
+        return existing;
+    }
+    var created = parade.addProperty(matchName);
+    created.name = effectName;
+    return created;
+}
+
+function ensureNullLayer(comp, layerName) {
+    var matches = findLayersByName(comp, layerName);
+    if (matches.length > 1) {
+        throw new Error("Layer name is ambiguous: '" + layerName + "'");
+    }
+    if (matches.length === 1) {
+        return { layer: matches[0], created: false };
+    }
+    var nullLayer = comp.layers.addNull();
+    nullLayer.name = layerName;
+    return { layer: nullLayer, created: true };
+}
+
+function setSingleEffectValue(effect, value) {
+    if (!effect || !effect.property(1)) {
+        throw new Error("Effect control is not writable");
+    }
+    effect.property(1).setValue(value);
+}
+
+function ensureSliderControl(layer, name, value) {
+    var fx = ensureNamedEffect(layer, "ADBE Slider Control", name);
+    setSingleEffectValue(fx, value);
+    return fx;
+}
+
+function ensureCheckboxControl(layer, name, value) {
+    var fx = ensureNamedEffect(layer, "ADBE Checkbox Control", name);
+    setSingleEffectValue(fx, value ? 1 : 0);
+    return fx;
+}
+
+function getDropdownMenuProperty(effect) {
+    if (!effect) {
+        return null;
+    }
+    try {
+        var firstProp = effect.property(1);
+        if (firstProp && firstProp.isDropdownEffect) {
+            return firstProp;
+        }
+    } catch (e) {}
+    try {
+        var menuProp = effect.property("Menu");
+        if (menuProp && menuProp.isDropdownEffect) {
+            return menuProp;
+        }
+    } catch (e2) {}
+    return null;
+}
+
+function ensureDropdownControl(layer, name, items, selectedIndex) {
+    var parade = getEffectParade(layer);
+    if (!parade) {
+        throw new Error("No effect parade on layer '" + layer.name + "'");
+    }
+    var fx = findEffectByName(layer, name);
+    if (fx && !getDropdownMenuProperty(fx)) {
+        throw new Error("Effect name conflict on layer '" + layer.name + "': " + name);
+    }
+    if (!fx) {
+        fx = parade.addProperty("Dropdown Menu Control");
+        fx.name = name;
+    }
+    var effectIndex = fx.propertyIndex;
+    var dropdownProp = getDropdownMenuProperty(fx);
+    if (!dropdownProp) {
+        throw new Error("Dropdown Menu control not available on this After Effects version");
+    }
+
+    if (items && items.length) {
+        dropdownProp.setPropertyParameters(items);
+        fx = parade.property(effectIndex);
+        if (!fx) {
+            throw new Error("Dropdown Menu control became invalid after updating menu items");
+        }
+        if (fx.name !== name) {
+            fx.name = name;
+        }
+        dropdownProp = getDropdownMenuProperty(fx);
+        if (!dropdownProp) {
+            throw new Error("Dropdown Menu control is not writable after updating menu items");
+        }
+    }
+
+    var normalizedSelectedIndex = parseInt(selectedIndex, 10);
+    if (isNaN(normalizedSelectedIndex) || normalizedSelectedIndex < 1) {
+        normalizedSelectedIndex = 1;
+    }
+    if (items && items.length && normalizedSelectedIndex > items.length) {
+        normalizedSelectedIndex = items.length;
+    }
+    dropdownProp.setValue(normalizedSelectedIndex);
+    return fx;
+}
+
+function parseHexColor(text) {
+    var hex = String(text || "").replace(/^\s+|\s+$/g, "").replace(/^#/, "").toUpperCase();
+    if (hex.length === 3) {
+        hex = hex.charAt(0) + hex.charAt(0) +
+              hex.charAt(1) + hex.charAt(1) +
+              hex.charAt(2) + hex.charAt(2);
+    }
+    if (hex.length !== 6 || !/^[0-9A-F]{6}$/.test(hex)) {
+        return null;
+    }
+    return [
+        parseInt(hex.substr(0, 2), 16) / 255,
+        parseInt(hex.substr(2, 2), 16) / 255,
+        parseInt(hex.substr(4, 2), 16) / 255
+    ];
+}
+
+function clamp(value, min, max) {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+}
+
+function mixColor(a, b, t) {
+    var tt = clamp(t, 0, 1);
+    return [
+        a[0] + (b[0] - a[0]) * tt,
+        a[1] + (b[1] - a[1]) * tt,
+        a[2] + (b[2] - a[2]) * tt
+    ];
+}
+
+function addUniqueProperty(list, prop) {
+    for (var i = 0; i < list.length; i++) {
+        if (list[i] === prop) {
+            return;
+        }
+    }
+    list.push(prop);
+}
+
+function collectKeyedProperties(item, outList) {
+    if (!item) return;
+
+    try {
+        if (item instanceof Property) {
+            if (item.numKeys && item.numKeys > 0) {
+                addUniqueProperty(outList, item);
+            }
+            return;
+        }
+    } catch (errProperty) {}
+
+    var count = 0;
+    try {
+        count = item.numProperties || 0;
+    } catch (errCount) {
+        count = 0;
+    }
+
+    for (var i = 1; i <= count; i++) {
+        var child = null;
+        try {
+            child = item.property(i);
+        } catch (errChild) {
+            child = null;
+        }
+        if (child) {
+            collectKeyedProperties(child, outList);
+        }
+    }
+}
+
+function getSelectedKeyedPropertiesFromActiveComp() {
+    var comp = getActiveComp();
+    if (!comp) {
+        throw new Error("No active composition");
+    }
+    var selectedProps = comp.selectedProperties;
+    if (!selectedProps || selectedProps.length === 0) {
+        throw new Error("No selected properties");
+    }
+    var properties = [];
+    for (var i = 0; i < selectedProps.length; i++) {
+        collectKeyedProperties(selectedProps[i], properties);
+    }
+    if (!properties.length) {
+        throw new Error("Selected properties do not contain keyframes");
+    }
+    return {
+        comp: comp,
+        properties: properties
+    };
+}
+
+function getPropertyOwningLayer(prop) {
+    if (!prop || !prop.propertyDepth) {
+        return null;
+    }
+    try {
+        return prop.propertyGroup(prop.propertyDepth);
+    } catch (e) {
+        return null;
+    }
+}
+
+function propertyLabel(prop) {
+    try {
+        return prop.name || prop.matchName || "Property";
+    } catch (e) {
+        return "Property";
+    }
+}
+
+function safeKeyValue(prop, index) {
+    try {
+        return prop.keyValue(index);
+    } catch (e) {
+        return null;
+    }
+}
+
+function isArrayLike(value) {
+    return value && typeof value === "object" && typeof value.length === "number" && typeof value !== "string";
+}
+
+function compareShapeLike(a, b, tolerance) {
+    if (!a || !b) return false;
+    if (!!a.closed !== !!b.closed) return false;
+    if (!valuesNearEqual(a.vertices, b.vertices, tolerance)) return false;
+    if (!valuesNearEqual(a.inTangents, b.inTangents, tolerance)) return false;
+    if (!valuesNearEqual(a.outTangents, b.outTangents, tolerance)) return false;
+    return true;
+}
+
+function valuesNearEqual(a, b, tolerance) {
+    if (a === b) return true;
+    if (a === null || b === null || a === undefined || b === undefined) return false;
+
+    var typeA = typeof a;
+    var typeB = typeof b;
+    if (typeA !== typeB) return false;
+
+    if (typeA === "number") {
+        return Math.abs(a - b) <= tolerance;
+    }
+    if (typeA === "boolean" || typeA === "string") {
+        return a === b;
+    }
+    if (isArrayLike(a) && isArrayLike(b)) {
+        if (a.length !== b.length) return false;
+        for (var i = 0; i < a.length; i++) {
+            if (!valuesNearEqual(a[i], b[i], tolerance)) return false;
+        }
+        return true;
+    }
+    if (typeA === "object") {
+        if (a.vertices !== undefined && b.vertices !== undefined) {
+            return compareShapeLike(a, b, tolerance);
+        }
+        if (a.text !== undefined && b.text !== undefined) {
+            return a.text === b.text;
+        }
+        try {
+            return a.toSource() === b.toSource();
+        } catch (err) {
+            return false;
+        }
+    }
+    return false;
+}
+
 // --- createComposition (from createComposition.jsx) --- 
 function createComposition(args) {
     try {
@@ -38,7 +989,6 @@ function createComposition(args) {
 // --- createTextLayer (from createTextLayer.jsx) ---
 function createTextLayer(args) {
     try {
-        var compName = args.compName || "";
         var text = args.text || "Text Layer";
         var position = args.position || [960, 540]; 
         var fontSize = args.fontSize || 72;
@@ -47,15 +997,7 @@ function createTextLayer(args) {
         var duration = args.duration || 5; 
         var fontFamily = args.fontFamily || "Arial";
         var alignment = args.alignment || "center"; 
-        var comp = null;
-        for (var i = 1; i <= app.project.numItems; i++) {
-            var item = app.project.item(i);
-            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
-        }
-        if (!comp) {
-            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; } 
-            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
-        }
+        var comp = resolveComposition(args);
         var textLayer = comp.layers.addText(text);
         var textProp = textLayer.property("ADBE Text Properties").property("ADBE Text Document");
         var textDocument = textProp.value;
@@ -71,6 +1013,7 @@ function createTextLayer(args) {
         if (duration > 0) { textLayer.outPoint = startTime + duration; }
         return JSON.stringify({
             status: "success", message: "Text layer created successfully",
+            composition: buildCompSummary(comp),
             layer: { name: textLayer.name, index: textLayer.index, type: "text", inPoint: textLayer.inPoint, outPoint: textLayer.outPoint, position: textLayer.property("Position").value }
         }, null, 2);
     } catch (error) {
@@ -81,7 +1024,6 @@ function createTextLayer(args) {
 // --- createShapeLayer (from createShapeLayer.jsx) --- 
 function createShapeLayer(args) {
     try {
-        var compName = args.compName || "";
         var shapeType = args.shapeType || "rectangle"; 
         var position = args.position || [960, 540]; 
         var size = args.size || [200, 200]; 
@@ -92,15 +1034,7 @@ function createShapeLayer(args) {
         var duration = args.duration || 5; 
         var name = args.name || "Shape Layer";
         var points = args.points || 5; 
-        var comp = null;
-        for (var i = 1; i <= app.project.numItems; i++) {
-            var item = app.project.item(i);
-            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
-        }
-        if (!comp) {
-            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; } 
-            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
-        }
+        var comp = resolveComposition(args);
         var shapeLayer = comp.layers.addShape();
         shapeLayer.name = name;
         var contents = shapeLayer.property("Contents"); 
@@ -134,6 +1068,7 @@ function createShapeLayer(args) {
         if (duration > 0) { shapeLayer.outPoint = startTime + duration; }
         return JSON.stringify({
             status: "success", message: "Shape layer created successfully",
+            composition: buildCompSummary(comp),
             layer: { name: shapeLayer.name, index: shapeLayer.index, type: "shape", shapeType: shapeType, inPoint: shapeLayer.inPoint, outPoint: shapeLayer.outPoint, position: shapeLayer.property("Position").value }
         }, null, 2);
     } catch (error) {
@@ -144,22 +1079,12 @@ function createShapeLayer(args) {
 // --- createCamera ---
 function createCamera(args) {
     try {
-        var compName = args.compName || "";
         var name = args.name || "Camera";
         var zoom = args.zoom || 1777.78; // Default ~50mm equivalent
         var position = args.position; // Optional [x, y, z]
         var pointOfInterest = args.pointOfInterest; // Optional [x, y, z]
         var oneNode = args.oneNode || false; // If true, create a one-node camera (no point of interest)
-
-        var comp = null;
-        for (var i = 1; i <= app.project.numItems; i++) {
-            var item = app.project.item(i);
-            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
-        }
-        if (!comp) {
-            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
-            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
-        }
+        var comp = resolveComposition(args);
 
         var centerPoint = [comp.width / 2, comp.height / 2];
         var cameraLayer = comp.layers.addCamera(name, centerPoint);
@@ -191,6 +1116,7 @@ function createCamera(args) {
         return JSON.stringify({
             status: "success",
             message: "Camera created successfully",
+            composition: buildCompSummary(comp),
             layer: result
         }, null, 2);
     } catch (error) {
@@ -201,31 +1127,9 @@ function createCamera(args) {
 // --- duplicateLayer ---
 function duplicateLayer(args) {
     try {
-        var compName = args.compName || "";
-        var layerIndex = args.layerIndex;
-        var layerName = args.layerName || "";
         var newName = args.newName; // optional rename
-
-        var comp = null;
-        for (var i = 1; i <= app.project.numItems; i++) {
-            var item = app.project.item(i);
-            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
-        }
-        if (!comp) {
-            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
-            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
-        }
-
-        var layer = null;
-        if (layerIndex !== undefined && layerIndex !== null) {
-            if (layerIndex > 0 && layerIndex <= comp.numLayers) { layer = comp.layer(layerIndex); }
-            else { throw new Error("Layer index out of bounds: " + layerIndex); }
-        } else if (layerName) {
-            for (var j = 1; j <= comp.numLayers; j++) {
-                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
-            }
-        }
-        if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
+        var comp = resolveComposition(args);
+        var layer = resolveSingleLayerInComp(comp, args);
 
         var newLayer = layer.duplicate();
         if (newName) { newLayer.name = newName; }
@@ -233,6 +1137,7 @@ function duplicateLayer(args) {
         return JSON.stringify({
             status: "success",
             message: "Layer duplicated successfully",
+            composition: buildCompSummary(comp),
             original: { name: layer.name, index: layer.index },
             duplicate: { name: newLayer.name, index: newLayer.index }
         }, null, 2);
@@ -244,30 +1149,8 @@ function duplicateLayer(args) {
 // --- deleteLayer ---
 function deleteLayer(args) {
     try {
-        var compName = args.compName || "";
-        var layerIndex = args.layerIndex;
-        var layerName = args.layerName || "";
-
-        var comp = null;
-        for (var i = 1; i <= app.project.numItems; i++) {
-            var item = app.project.item(i);
-            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
-        }
-        if (!comp) {
-            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
-            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
-        }
-
-        var layer = null;
-        if (layerIndex !== undefined && layerIndex !== null) {
-            if (layerIndex > 0 && layerIndex <= comp.numLayers) { layer = comp.layer(layerIndex); }
-            else { throw new Error("Layer index out of bounds: " + layerIndex); }
-        } else if (layerName) {
-            for (var j = 1; j <= comp.numLayers; j++) {
-                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
-            }
-        }
-        if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
+        var comp = resolveComposition(args);
+        var layer = resolveSingleLayerInComp(comp, args);
 
         var deletedName = layer.name;
         var deletedIndex = layer.index;
@@ -276,6 +1159,7 @@ function deleteLayer(args) {
         return JSON.stringify({
             status: "success",
             message: "Layer deleted successfully",
+            composition: buildCompSummary(comp),
             deleted: { name: deletedName, index: deletedIndex }
         }, null, 2);
     } catch (error) {
@@ -297,27 +1181,8 @@ function setLayerMask(args) {
         var maskOpacity = args.maskOpacity; // optional 0-100
         var maskExpansion = args.maskExpansion; // optional pixels
         var maskName = args.maskName; // optional rename
-
-        var comp = null;
-        for (var i = 1; i <= app.project.numItems; i++) {
-            var item = app.project.item(i);
-            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
-        }
-        if (!comp) {
-            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
-            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
-        }
-
-        var layer = null;
-        if (layerIndex !== undefined && layerIndex !== null) {
-            if (layerIndex > 0 && layerIndex <= comp.numLayers) { layer = comp.layer(layerIndex); }
-            else { throw new Error("Layer index out of bounds: " + layerIndex); }
-        } else if (layerName) {
-            for (var j = 1; j <= comp.numLayers; j++) {
-                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
-            }
-        }
-        if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
+        var comp = resolveComposition(args);
+        var layer = resolveSingleLayerInComp(comp, args);
 
         // Build the mask shape
         var shapePoints = [];
@@ -397,6 +1262,7 @@ function setLayerMask(args) {
         return JSON.stringify({
             status: "success",
             message: "Mask set successfully",
+            composition: buildCompSummary(comp),
             layer: { name: layer.name, index: layer.index },
             mask: {
                 name: mask.name,
@@ -413,7 +1279,6 @@ function setLayerMask(args) {
 // --- createSolidLayer (from createSolidLayer.jsx) ---
 function createSolidLayer(args) {
     try {
-        var compName = args.compName || "";
         var color = args.color || [1, 1, 1]; 
         var name = args.name || "Solid Layer";
         var position = args.position || [960, 540]; 
@@ -421,15 +1286,7 @@ function createSolidLayer(args) {
         var startTime = args.startTime || 0;
         var duration = args.duration || 5; 
         var isAdjustment = args.isAdjustment || false; 
-        var comp = null;
-        for (var i = 1; i <= app.project.numItems; i++) {
-            var item = app.project.item(i);
-            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
-        }
-        if (!comp) {
-            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; } 
-            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
-        }
+        var comp = resolveComposition(args);
         if (!size) { size = [comp.width, comp.height]; }
         var solidLayer;
         if (isAdjustment) {
@@ -443,6 +1300,7 @@ function createSolidLayer(args) {
         if (duration > 0) { solidLayer.outPoint = startTime + duration; }
         return JSON.stringify({
             status: "success", message: isAdjustment ? "Adjustment layer created successfully" : "Solid layer created successfully",
+            composition: buildCompSummary(comp),
             layer: { name: solidLayer.name, index: solidLayer.index, type: isAdjustment ? "adjustment" : "solid", inPoint: solidLayer.inPoint, outPoint: solidLayer.outPoint, position: solidLayer.property("Position").value, isAdjustment: solidLayer.adjustmentLayer }
         }, null, 2);
     } catch (error) {
@@ -453,10 +1311,6 @@ function createSolidLayer(args) {
 // --- setLayerProperties (modified to handle text properties) ---
 function setLayerProperties(args) {
     try {
-        var compName = args.compName || "";
-        var layerName = args.layerName || "";
-        var layerIndex = args.layerIndex; 
-        
         // General Properties
         var position = args.position; 
         var scale = args.scale; 
@@ -471,28 +1325,8 @@ function setLayerProperties(args) {
         var fontSize = args.fontSize; // New: font size
         var fillColor = args.fillColor; // New: font color
         
-        // Find the composition (same logic as before)
-        var comp = null;
-        for (var i = 1; i <= app.project.numItems; i++) {
-            var item = app.project.item(i);
-            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
-        }
-        if (!comp) {
-            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; } 
-            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
-        }
-        
-        // Find the layer (same logic as before)
-        var layer = null;
-        if (layerIndex !== undefined && layerIndex !== null) {
-            if (layerIndex > 0 && layerIndex <= comp.numLayers) { layer = comp.layer(layerIndex); } 
-            else { throw new Error("Layer index out of bounds: " + layerIndex); }
-        } else if (layerName) {
-            for (var j = 1; j <= comp.numLayers; j++) {
-                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
-            }
-        }
-        if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
+        var comp = resolveComposition(args);
+        var layer = resolveSingleLayerInComp(comp, args);
         
         var changedProperties = [];
         var textDocumentChanged = false;
@@ -658,6 +1492,7 @@ function setLayerProperties(args) {
 
         return JSON.stringify({
             status: "success", message: "Layer properties updated successfully",
+            composition: buildCompSummary(comp),
             layer: returnLayerInfo
         }, null, 2);
     } catch (error) {
@@ -669,36 +1504,24 @@ function setLayerProperties(args) {
 // --- batchSetLayerProperties: apply properties to multiple layers in one call ---
 function batchSetLayerProperties(args) {
     try {
-        var compName = args.compName || "";
         var operations = args.operations; // Array of {layerIndex, threeDLayer, position, scale, rotation, opacity, ...}
 
         if (!operations || !operations.length) {
             throw new Error("No operations provided. Pass an array of {layerIndex, ...properties}");
         }
 
-        var comp = null;
-        for (var i = 1; i <= app.project.numItems; i++) {
-            var item = app.project.item(i);
-            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
-        }
-        if (!comp) {
-            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
-            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
-        }
+        var comp = resolveComposition(args);
 
         var results = [];
         for (var o = 0; o < operations.length; o++) {
             var op = operations[o];
             var layer = null;
-            if (op.layerIndex !== undefined && op.layerIndex !== null) {
-                if (op.layerIndex > 0 && op.layerIndex <= comp.numLayers) { layer = comp.layer(op.layerIndex); }
-                else { results.push({ layerIndex: op.layerIndex, status: "error", message: "Layer index out of bounds" }); continue; }
-            } else if (op.layerName) {
-                for (var j = 1; j <= comp.numLayers; j++) {
-                    if (comp.layer(j).name === op.layerName) { layer = comp.layer(j); break; }
-                }
+            try {
+                layer = resolveSingleLayerInComp(comp, op);
+            } catch (layerError) {
+                results.push({ layerIndex: op.layerIndex, layerName: op.layerName, status: "error", message: layerError.toString() });
+                continue;
             }
-            if (!layer) { results.push({ layerIndex: op.layerIndex, layerName: op.layerName, status: "error", message: "Layer not found" }); continue; }
 
             var changed = [];
             if (op.threeDLayer !== undefined && op.threeDLayer !== null) { layer.threeDLayer = !!op.threeDLayer; changed.push("threeDLayer"); }
@@ -734,136 +1557,988 @@ function batchSetLayerProperties(args) {
             });
         }
 
-        return JSON.stringify({ status: "success", results: results }, null, 2);
+        return JSON.stringify({ status: "success", composition: buildCompSummary(comp), results: results }, null, 2);
     } catch (error) {
         return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
     }
 }
 
-/**
- * Sets a keyframe for a specific property on a layer.
- * Indices are 1-based for After Effects collections.
- * @param {number} compIndex - The index of the composition (1-based).
- * @param {number} layerIndex - The index of the layer within the composition (1-based).
- * @param {string} propertyName - The name of the property (e.g., "Position", "Scale", "Rotation", "Opacity").
- * @param {number} timeInSeconds - The time (in seconds) for the keyframe.
- * @param {any} value - The value for the keyframe (e.g., [x, y] for Position, [w, h] for Scale, angle for Rotation, percentage for Opacity).
- * @returns {string} JSON string indicating success or error.
- */
-function setLayerKeyframe(compIndex, layerIndex, propertyName, timeInSeconds, value) {
+function setLayerKeyframe(args) {
     try {
-        // Use 1-based indices as per After Effects API
-        var comp = app.project.items[compIndex];
-        if (!comp || !(comp instanceof CompItem)) {
-            return JSON.stringify({ success: false, message: "Composition not found at index " + compIndex });
-        }
-        var layer = comp.layers[layerIndex];
-        if (!layer) {
-            return JSON.stringify({ success: false, message: "Layer not found at index " + layerIndex + " in composition '" + comp.name + "'"});
-        }
+        var comp = resolveComposition(args);
+        var layer = resolveSingleLayerInComp(comp, args);
+        var propertyName = args.propertyName;
+        var timeInSeconds = args.timeInSeconds;
+        var value = args.value;
+        var property = resolvePropertyOnLayer(layer, propertyName);
 
-        var transformGroup = layer.property("Transform");
-        if (!transformGroup) {
-             return JSON.stringify({ success: false, message: "Transform properties not found for layer '" + layer.name + "' (type: " + layer.matchName + ")." });
-        }
-
-        var property = transformGroup.property(propertyName);
-        if (!property) {
-            // Check other common property groups if not in Transform
-             if (layer.property("Effects") && layer.property("Effects").property(propertyName)) {
-                 property = layer.property("Effects").property(propertyName);
-             } else if (layer.property("Text") && layer.property("Text").property(propertyName)) {
-                 property = layer.property("Text").property(propertyName);
-            } // Add more groups if needed (e.g., Masks, Shapes)
-
-            if (!property) {
-                 return JSON.stringify({ success: false, message: "Property '" + propertyName + "' not found on layer '" + layer.name + "'." });
-            }
-        }
-
-
-        // Ensure the property can be keyframed
         if (!property.canVaryOverTime) {
-             return JSON.stringify({ success: false, message: "Property '" + propertyName + "' cannot be keyframed." });
+            return JSON.stringify({ status: "error", message: "Property '" + propertyName + "' cannot be keyframed." });
         }
 
-        // Make sure the property is enabled for keyframing
         if (property.numKeys === 0 && !property.isTimeVarying) {
-             property.setValueAtTime(comp.time, property.value); // Set initial keyframe if none exist
+            property.setValueAtTime(comp.time, property.value);
         }
-
 
         property.setValueAtTime(timeInSeconds, value);
 
-        return JSON.stringify({ success: true, message: "Keyframe set for '" + propertyName + "' on layer '" + layer.name + "' at " + timeInSeconds + "s." });
+        return JSON.stringify({
+            status: "success",
+            message: "Keyframe set for '" + propertyName + "' on layer '" + layer.name + "' at " + timeInSeconds + "s.",
+            composition: buildCompSummary(comp),
+            layer: buildLayerSummary(layer),
+            propertyName: propertyName,
+            timeInSeconds: timeInSeconds,
+            value: value,
+            changed: ["keyframe"]
+        }, null, 2);
     } catch (e) {
-        return JSON.stringify({ success: false, message: "Error setting keyframe: " + e.toString() + " (Line: " + e.line + ")" });
+        return JSON.stringify({ status: "error", message: "Error setting keyframe: " + e.toString() + " (Line: " + e.line + ")" }, null, 2);
     }
 }
 
 
-/**
- * Sets an expression for a specific property on a layer.
- * @param {number} compIndex - The index of the composition (1-based).
- * @param {number} layerIndex - The index of the layer within the composition (1-based).
- * @param {string} propertyName - The name of the property (e.g., "Position", "Scale", "Rotation", "Opacity").
- * @param {string} expressionString - The JavaScript expression string. Use "" to remove expression.
- * @returns {string} JSON string indicating success or error.
- */
-function setLayerExpression(compIndex, layerIndex, propertyName, expressionString) {
+function setLayerExpression(args) {
     try {
-         // Adjust indices to be 0-based for ExtendScript arrays
-        var comp = app.project.items[compIndex];
-         if (!comp || !(comp instanceof CompItem)) {
-            return JSON.stringify({ success: false, message: "Composition not found at index " + compIndex });
-        }
-        var layer = comp.layers[layerIndex];
-         if (!layer) {
-            return JSON.stringify({ success: false, message: "Layer not found at index " + layerIndex + " in composition '" + comp.name + "'"});
-        }
-
-        var transformGroup = layer.property("Transform");
-         if (!transformGroup) {
-             // Allow expressions on non-transformable layers if property exists elsewhere
-             // return JSON.stringify({ success: false, message: "Transform properties not found for layer '" + layer.name + "' (type: " + layer.matchName + ")." });
-        }
-
-        var property = transformGroup ? transformGroup.property(propertyName) : null;
-         if (!property) {
-            // Check other common property groups if not in Transform
-             if (layer.property("Effects") && layer.property("Effects").property(propertyName)) {
-                 property = layer.property("Effects").property(propertyName);
-             } else if (layer.property("Text") && layer.property("Text").property(propertyName)) {
-                 property = layer.property("Text").property(propertyName);
-             }
-
-            // Search inside individual effects for sub-properties
-            if (!property && layer.property("Effects")) {
-                var effects = layer.property("Effects");
-                for (var ei = 1; ei <= effects.numProperties; ei++) {
-                    var eff = effects.property(ei);
-                    try {
-                        var subProp = eff.property(propertyName);
-                        if (subProp) { property = subProp; break; }
-                    } catch (e2) {}
-                }
-            }
-
-            if (!property) {
-                 return JSON.stringify({ success: false, message: "Property '" + propertyName + "' not found on layer '" + layer.name + "'." });
-            }
-        }
-
+        var comp = resolveComposition(args);
+        var layer = resolveSingleLayerInComp(comp, args);
+        var propertyName = args.propertyName;
+        var expressionString = args.expressionString;
+        var property = resolvePropertyOnLayer(layer, propertyName);
         if (!property.canSetExpression) {
-            return JSON.stringify({ success: false, message: "Property '" + propertyName + "' does not support expressions." });
+            return JSON.stringify({ status: "error", message: "Property '" + propertyName + "' does not support expressions." }, null, 2);
         }
 
         property.expression = expressionString;
 
         var action = expressionString === "" ? "removed" : "set";
-        return JSON.stringify({ success: true, message: "Expression " + action + " for '" + propertyName + "' on layer '" + layer.name + "'." });
+        return JSON.stringify({
+            status: "success",
+            message: "Expression " + action + " for '" + propertyName + "' on layer '" + layer.name + "'.",
+            composition: buildCompSummary(comp),
+            layer: buildLayerSummary(layer),
+            propertyName: propertyName,
+            changed: ["expression"]
+        }, null, 2);
     } catch (e) {
-        return JSON.stringify({ success: false, message: "Error setting expression: " + e.toString() + " (Line: " + e.line + ")" });
+        return JSON.stringify({ status: "error", message: "Error setting expression: " + e.toString() + " (Line: " + e.line + ")" }, null, 2);
+    }
+}
+
+function enableMotionBlur(args) {
+    try {
+        args = args || {};
+        var scope = args.scope || "active_comp";
+        var includeLocked = args.includeLocked === true;
+        var comps = [];
+        var i, j;
+
+        if (scope === "all_comps") {
+            for (i = 1; i <= app.project.numItems; i++) {
+                var item = app.project.item(i);
+                if (item instanceof CompItem) {
+                    comps.push(item);
+                }
+            }
+            if (!comps.length) {
+                throw new Error("No compositions found in the project");
+            }
+        } else {
+            comps.push(resolveComposition(args));
+        }
+
+        var changedComps = 0;
+        var changedLayers = 0;
+        var skippedLockedLayers = 0;
+        var compResults = [];
+
+        for (i = 0; i < comps.length; i++) {
+            var comp = comps[i];
+            var compChanged = false;
+            var compLayerChanges = 0;
+            var compSkippedLocked = 0;
+
+            if (!comp.motionBlur) {
+                comp.motionBlur = true;
+                compChanged = true;
+            }
+
+            for (j = 1; j <= comp.numLayers; j++) {
+                var layer = comp.layer(j);
+                var wasLocked = layer.locked;
+
+                if (wasLocked && !includeLocked) {
+                    compSkippedLocked++;
+                    skippedLockedLayers++;
+                    continue;
+                }
+
+                if (wasLocked && includeLocked) {
+                    layer.locked = false;
+                }
+
+                if (!layer.motionBlur) {
+                    layer.motionBlur = true;
+                    compLayerChanges++;
+                    changedLayers++;
+                }
+
+                if (wasLocked && includeLocked) {
+                    layer.locked = true;
+                }
+            }
+
+            if (compChanged || compLayerChanges > 0) {
+                changedComps++;
+            }
+
+            compResults.push({
+                name: comp.name,
+                index: findProjectItemIndexById(comp.id),
+                changedCompSwitch: compChanged,
+                changedLayers: compLayerChanges,
+                skippedLockedLayers: compSkippedLocked
+            });
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Motion blur enabled successfully",
+            scope: scope,
+            changed: ["motionBlur"],
+            changedComps: changedComps,
+            changedLayers: changedLayers,
+            skippedLockedLayers: skippedLockedLayers,
+            results: compResults
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function sequenceLayerPosition(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        var offsetX = hasValue(args.offsetX) ? parseFloat(args.offsetX) : 0;
+        var offsetY = hasValue(args.offsetY) ? parseFloat(args.offsetY) : 36.6;
+        var order = args.order || "layer_stack";
+
+        if (isNaN(offsetX) || isNaN(offsetY)) {
+            throw new Error("offsetX and offsetY must be valid numbers");
+        }
+
+        var layers = resolveMultipleLayersInComp(comp, args);
+        if (order === "layer_stack") {
+            layers = sortLayersByStackOrder(layers);
+        }
+
+        function cloneArrayLike(value) {
+            var copy = [];
+            for (var c = 0; c < value.length; c++) {
+                copy.push(value[c]);
+            }
+            return copy;
+        }
+
+        var results = [];
+        var anchorPosition = null;
+        var anchorLayer = null;
+        for (var i = 0; i < layers.length; i++) {
+            var layer = layers[i];
+            var posProp = layer.property("Position");
+            if (!posProp) {
+                throw new Error("Layer '" + layer.name + "' does not have a position property");
+            }
+            var pos = posProp.value;
+            if (!pos || pos.length === undefined || pos.length < 2) {
+                throw new Error("Layer '" + layer.name + "' does not expose a writable XY position array");
+            }
+            if (!anchorPosition) {
+                anchorPosition = cloneArrayLike(pos);
+                anchorLayer = layer;
+            }
+            var newPos = cloneArrayLike(pos);
+            newPos[0] = anchorPosition[0] + (offsetX * i);
+            newPos[1] = anchorPosition[1] + (offsetY * i);
+            posProp.setValue(newPos);
+            results.push({
+                layer: buildLayerSummary(layer),
+                orderIndex: i,
+                previousPosition: cloneArrayLike(pos),
+                position: newPos
+            });
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Layer positions sequenced successfully",
+            composition: buildCompSummary(comp),
+            targetLayers: buildLayerListSummary(layers),
+            changed: ["position"],
+            offset: { x: offsetX, y: offsetY },
+            order: order,
+            anchorLayer: buildLayerSummary(anchorLayer),
+            anchorPosition: anchorPosition,
+            results: results
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function copyPathsToMasks(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        var activeComp = getActiveComp();
+        if (!activeComp || activeComp.id !== comp.id) {
+            throw new Error("Selected path workflows require the target composition to be the active composition");
+        }
+
+        function isPathProperty(prop) {
+            return prop && (prop.matchName === "ADBE Vector Shape" || prop.matchName === "ADBE Mask Shape");
+        }
+
+        function extractPathFromGroup(prop) {
+            if (prop && prop.canSetExpression === false && prop.property && prop.property("Path") && prop.property("Path").matchName === "ADBE Vector Shape") {
+                return prop.property("Path");
+            }
+            return null;
+        }
+
+        function collectUniquePaths(targetComp) {
+            var uniquePaths = [];
+            var selectedLayers = targetComp.selectedLayers;
+            if (!selectedLayers || selectedLayers.length === 0) {
+                throw new Error("Select at least one layer containing a path");
+            }
+
+            for (var l = 0; l < selectedLayers.length; l++) {
+                var layer = selectedLayers[l];
+                var selectedProps = layer.selectedProperties;
+
+                for (var p = 0; p < selectedProps.length; p++) {
+                    var prop = selectedProps[p];
+                    var validPath = null;
+
+                    if (isPathProperty(prop)) {
+                        validPath = prop;
+                    } else {
+                        var extracted = extractPathFromGroup(prop);
+                        if (extracted) {
+                            validPath = extracted;
+                        }
+                    }
+
+                    if (validPath) {
+                        var exists = false;
+                        for (var k = 0; k < uniquePaths.length; k++) {
+                            if (uniquePaths[k].pathProp === validPath) {
+                                exists = true;
+                                break;
+                            }
+                        }
+                        if (!exists) {
+                            uniquePaths.push({ sourceLayer: layer, pathProp: validPath });
+                        }
+                    }
+                }
+            }
+            return uniquePaths;
+        }
+
+        function deg2rad(d){ return d * Math.PI / 180; }
+        function mulMat(a,b){
+            var r = [[0,0,0],[0,0,0],[0,0,0]];
+            for (var i=0;i<3;i++){
+                for (var j=0;j<3;j++){
+                    r[i][j]=a[i][0]*b[0][j]+a[i][1]*b[1][j]+a[i][2]*b[2][j];
+                }
+            }
+            return r;
+        }
+        function matTranslate(x,y){ return [[1,0,x],[0,1,y],[0,0,1]]; }
+        function matScale(sx,sy){ return [[sx,0,0],[0,sy,0],[0,0,1]]; }
+        function matRotate(deg){
+            var r = deg2rad(deg);
+            var c = Math.cos(r), s = Math.sin(r);
+            return [[c,-s,0],[s,c,0],[0,0,1]];
+        }
+        function applyMatPoint(m, pt){
+            return [
+                m[0][0]*pt[0] + m[0][1]*pt[1] + m[0][2],
+                m[1][0]*pt[0] + m[1][1]*pt[1] + m[1][2]
+            ];
+        }
+        function applyMatVectorNoTranslate(m, v){
+            return [
+                m[0][0]*v[0] + m[0][1]*v[1],
+                m[1][0]*v[0] + m[1][1]*v[1]
+            ];
+        }
+        function getVectorGroupMatrix(group){
+            var t = group.property("ADBE Vector Transform Group");
+            if (!t) return [[1,0,0],[0,1,0],[0,0,1]];
+            var pos = t.property("ADBE Vector Position").value;
+            var anc = t.property("ADBE Vector Anchor").value;
+            var sc  = t.property("ADBE Vector Scale").value;
+            var rot = t.property("ADBE Vector Rotation").value;
+            var sx = sc[0]/100, sy = sc[1]/100;
+            var m = matTranslate(pos[0], pos[1]);
+            m = mulMat(m, matRotate(rot));
+            m = mulMat(m, matScale(sx, sy));
+            m = mulMat(m, matTranslate(-anc[0], -anc[1]));
+            return m;
+        }
+        function bakeShapeToLayerSpace(shapeProp){
+            var shape = shapeProp.value;
+            var m = [[1,0,0],[0,1,0],[0,0,1]];
+            var cur = shapeProp.parentProperty;
+            while (cur){
+                if (cur.matchName === "ADBE Root Vectors Group") break;
+                if (cur.property && cur.property("ADBE Vector Transform Group")){
+                    var gm = getVectorGroupMatrix(cur);
+                    m = mulMat(gm, m);
+                }
+                cur = cur.parentProperty;
+            }
+
+            var v = shape.vertices;
+            var inT = shape.inTangents;
+            var outT = shape.outTangents;
+            for (var i=0; i<v.length; i++){
+                v[i] = applyMatPoint(m, v[i]);
+                inT[i] = applyMatVectorNoTranslate(m, inT[i]);
+                outT[i] = applyMatVectorNoTranslate(m, outT[i]);
+            }
+
+            var newShape = new Shape();
+            newShape.vertices = v;
+            newShape.inTangents = inT;
+            newShape.outTangents = outT;
+            newShape.closed = shape.closed;
+            return newShape;
+        }
+
+        var pathEntries = collectUniquePaths(comp);
+        if (!pathEntries.length) {
+            throw new Error("No valid selected paths found");
+        }
+
+        var targetLayerMode = args.targetLayerMode || "same_layer";
+        var maskMode = args.maskMode || "add";
+        var targetLayers = [];
+        if (targetLayerMode === "selected_layers") {
+            targetLayers = resolveMultipleLayersInComp(comp, args);
+        }
+
+        var maskModes = {
+            "none": MaskMode.NONE,
+            "add": MaskMode.ADD,
+            "subtract": MaskMode.SUBTRACT,
+            "intersect": MaskMode.INTERSECT
+        };
+        var resolvedMaskMode = maskModes[maskMode];
+        if (resolvedMaskMode === undefined) {
+            throw new Error("Unsupported maskMode: " + maskMode);
+        }
+
+        var createdMasks = [];
+        for (var pIndex = 0; pIndex < pathEntries.length; pIndex++) {
+            var entry = pathEntries[pIndex];
+            var shapeToSet = entry.pathProp.matchName === "ADBE Mask Shape" ? entry.pathProp.value : bakeShapeToLayerSpace(entry.pathProp);
+            var destinations = targetLayerMode === "selected_layers" ? targetLayers : [entry.sourceLayer];
+
+            for (var d = 0; d < destinations.length; d++) {
+                var destinationLayer = destinations[d];
+                var newMask = destinationLayer.Masks.addProperty("ADBE Mask Atom");
+                newMask.maskMode = resolvedMaskMode;
+                newMask.property("ADBE Mask Shape").setValue(shapeToSet);
+                createdMasks.push({
+                    sourceLayer: buildLayerSummary(entry.sourceLayer),
+                    targetLayer: buildLayerSummary(destinationLayer),
+                    mask: {
+                        name: newMask.name,
+                        index: newMask.propertyIndex,
+                        mode: maskMode
+                    }
+                });
+            }
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Selected paths copied to masks successfully",
+            composition: buildCompSummary(comp),
+            changed: ["mask"],
+            created: createdMasks,
+            pathCount: pathEntries.length,
+            maskCount: createdMasks.length,
+            targetLayerMode: targetLayerMode
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function setupTypewriterText(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        var layer = resolveSingleLayerInComp(comp, args);
+        if (!(layer instanceof TextLayer) || !layer.property("Source Text")) {
+            throw new Error("Target layer must be a text layer");
+        }
+
+        var speed = hasValue(args.speed) ? parseFloat(args.speed) : 10;
+        var blinkSpeed = hasValue(args.blinkSpeed) ? parseFloat(args.blinkSpeed) : 2;
+        var startAt = hasValue(args.startAt) ? parseFloat(args.startAt) : 0;
+        var blinkOn = args.blinkOn !== false;
+        var controllerName = args.controllerName || "CTRL_Typewriter";
+
+        if (isNaN(speed) || isNaN(blinkSpeed) || isNaN(startAt)) {
+            throw new Error("speed, blinkSpeed, and startAt must be valid numbers");
+        }
+
+        var controllerInfo = ensureNullLayer(comp, controllerName);
+        var controllerLayer = controllerInfo.layer;
+        ensureSliderControl(controllerLayer, "Speed", speed);
+        ensureSliderControl(controllerLayer, "Blink Speed", blinkSpeed);
+        ensureSliderControl(controllerLayer, "Start At", startAt);
+        ensureCheckboxControl(controllerLayer, "Blink On", blinkOn);
+
+        var escapedControllerName = controllerName.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+        var expr =
+'txt = value.toString();\n' +
+'ctrl = thisComp.layer("' + escapedControllerName + '");\n' +
+'speed = ctrl.effect("Speed")("Slider");\n' +
+'blinkSpeed = ctrl.effect("Blink Speed")("Slider");\n' +
+'start = ctrl.effect("Start At")("Slider");\n' +
+'blinkOn = ctrl.effect("Blink On")("Checkbox");\n' +
+'t = time - inPoint - start;\n' +
+'count = Math.floor(t * speed);\n' +
+'count = clamp(count, 0, txt.length);\n' +
+'blink = Math.sin(time * blinkSpeed * Math.PI * 2) > 0;\n' +
+'cursor = "";\n' +
+'if (blinkOn == 1){ cursor = blink ? "|" : " "; }\n' +
+'if (count <= 0){\n' +
+'    cursor;\n' +
+'}else{\n' +
+'    txt.substr(0, count) + cursor;\n' +
+'}';
+
+        layer.property("Source Text").expression = expr;
+
+        return JSON.stringify({
+            status: "success",
+            message: "Typewriter setup applied successfully",
+            composition: buildCompSummary(comp),
+            layer: buildLayerSummary(layer),
+            controller: {
+                name: controllerLayer.name,
+                index: controllerLayer.index,
+                created: controllerInfo.created
+            },
+            changed: ["expression", "controller"],
+            settings: {
+                speed: speed,
+                blinkSpeed: blinkSpeed,
+                startAt: startAt,
+                blinkOn: blinkOn
+            }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function createTimerRig(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        var mode = args.mode || "countdown";
+        var timeFormat = args.timeFormat || "HH:MM:SS";
+        var rate = hasValue(args.rate) ? parseFloat(args.rate) : 1;
+        var startHours = hasValue(args.startHours) ? parseFloat(args.startHours) : 24;
+        var startMinutes = hasValue(args.startMinutes) ? parseFloat(args.startMinutes) : 0;
+        var startSeconds = hasValue(args.startSeconds) ? parseFloat(args.startSeconds) : 0;
+        var showMilliseconds = args.showMilliseconds === true;
+        var allowNegativeTime = args.allowNegativeTime === true;
+        var layerName = args.layerName || "Timer";
+
+        if (isNaN(rate) || isNaN(startHours) || isNaN(startMinutes) || isNaN(startSeconds)) {
+            throw new Error("Timer values must be valid numbers");
+        }
+
+        var dropdownIndexMap = {
+            "HH:MM:SS": 1,
+            "MM:SS": 2,
+            "SS": 3
+        };
+        var dropdownIndex = dropdownIndexMap[timeFormat];
+        if (!dropdownIndex) {
+            throw new Error("Unsupported timeFormat: " + timeFormat);
+        }
+
+        var textLayer = comp.layers.addText("00:00:00");
+        textLayer.name = layerName;
+        var textLayerIndex = textLayer.index;
+
+        ensureCheckboxControl(textLayer, "Countdown", mode === "countdown");
+        ensureDropdownControl(textLayer, "Time Format", ["HH:MM:SS", "MM:SS", "SS"], dropdownIndex);
+        textLayer = comp.layer(textLayerIndex);
+        ensureSliderControl(textLayer, "Rate", rate);
+        ensureSliderControl(textLayer, "Start Time - Hours", startHours);
+        ensureSliderControl(textLayer, "Start Time - Minutes", startMinutes);
+        ensureSliderControl(textLayer, "Start Time - Seconds", startSeconds);
+        ensureCheckboxControl(textLayer, "Milliseconds", showMilliseconds);
+        ensureCheckboxControl(textLayer, "Negative Time", allowNegativeTime);
+        textLayer = comp.layer(textLayerIndex);
+
+        var exp =
+'rate = clamp(effect("Rate")("Slider"), 0, 100);\n' +
+'h = effect("Start Time - Hours")("Slider");\n' +
+'m = effect("Start Time - Minutes")("Slider");\n' +
+'s = effect("Start Time - Seconds")("Slider");\n' +
+'c = effect("Countdown")("Checkbox").value;\n' +
+'ms = effect("Milliseconds")("Checkbox").value;\n' +
+'format = effect("Time Format")("Menu").value;\n' +
+'n = effect("Negative Time")("Checkbox").value;\n' +
+'st = h*3600 + m*60 + s;\n' +
+'t = c ? st - rate*(time - inPoint) : st + rate*(time - inPoint);\n' +
+'f = t <= 0 ? [0, 0, 0, 0] : [t/3600, (t%3600)/60, t%60, t.toFixed(3).substr(-3)];\n' +
+'for (i in f){ f[i] = String(Math.floor(f[i])).padStart(i>2?3:2, "0"); }\n' +
+'if(!ms) f.pop();\n' +
+'switch (format){\n' +
+'case 1: t = f.join(":"); break;\n' +
+'case 2: t = f.slice(1).join(":"); break;\n' +
+'case 3: t = f.slice(2).join(":"); break;\n' +
+'}\n' +
+'n ? "-" + t : t;';
+
+        textLayer.text.sourceText.expression = exp;
+
+        return JSON.stringify({
+            status: "success",
+            message: "Timer rig created successfully",
+            composition: buildCompSummary(comp),
+            layer: buildLayerSummary(textLayer),
+            changed: ["created", "expression", "controls"],
+            settings: {
+                mode: mode,
+                timeFormat: timeFormat,
+                rate: rate,
+                startHours: startHours,
+                startMinutes: startMinutes,
+                startSeconds: startSeconds,
+                showMilliseconds: showMilliseconds,
+                allowNegativeTime: allowNegativeTime
+            }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function applyBwTint(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        var layers = resolveMultipleLayersInComp(comp, args);
+        var amount = hasValue(args.amount) ? parseFloat(args.amount) : 100;
+        var whiteishAmount = hasValue(args.whiteishAmount) ? parseFloat(args.whiteishAmount) : 0;
+        var skipLocked = args.skipLocked !== false;
+        var presetName = args.presetName || "Warm";
+        var presets = {
+            "Neutral": "#FFFFFF",
+            "Warm": "#FFD8A8",
+            "Gold": "#F7C948",
+            "Orange": "#FF9F43",
+            "Sepia": "#C38B5F",
+            "Cool": "#B7D7FF",
+            "Teal": "#7FD6D2"
+        };
+        var hexColor = args.hexColor || presets[presetName] || presets.Warm;
+        var tintColor = parseHexColor(hexColor);
+
+        if (isNaN(amount) || isNaN(whiteishAmount)) {
+            throw new Error("amount and whiteishAmount must be valid numbers");
+        }
+        if (!tintColor) {
+            throw new Error("Invalid hexColor. Use #RRGGBB or #RGB.");
+        }
+
+        function ensureTintEffect(layer) {
+            return ensureNamedEffect(layer, "ADBE Tint", "BW Tint");
+        }
+
+        function setupTintEffect(fx, tintAmount, color, whiteMixAmount) {
+            var mapBlack = fx.property(1);
+            var mapWhite = fx.property(2);
+            var amt = fx.property(3);
+
+            var whiteMix = clamp(whiteMixAmount / 100, 0, 1);
+            var shadowMix = whiteMix * 0.65;
+            var blackTarget = mixColor([0, 0, 0], [1, 1, 1], shadowMix);
+            var whiteTarget = mixColor([color[0], color[1], color[2]], [1, 1, 1], whiteMix);
+
+            if (mapBlack) mapBlack.setValue(blackTarget);
+            if (mapWhite) mapWhite.setValue(whiteTarget);
+            if (amt) amt.setValue(tintAmount);
+        }
+
+        var applied = [];
+        var skippedLockedLayers = [];
+        for (var i = 0; i < layers.length; i++) {
+            var layer = layers[i];
+            if (skipLocked && layer.locked) {
+                skippedLockedLayers.push(buildLayerSummary(layer));
+                continue;
+            }
+            var fx = ensureTintEffect(layer);
+            setupTintEffect(fx, amount, tintColor, whiteishAmount);
+            applied.push({
+                layer: buildLayerSummary(layer),
+                effect: {
+                    name: fx.name,
+                    matchName: fx.matchName,
+                    index: fx.propertyIndex
+                }
+            });
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "BW tint applied successfully",
+            composition: buildCompSummary(comp),
+            changed: ["effect"],
+            applied: applied,
+            skippedLockedLayers: skippedLockedLayers,
+            settings: {
+                amount: amount,
+                presetName: presetName,
+                hexColor: hexColor,
+                whiteishAmount: whiteishAmount,
+                skipLocked: skipLocked
+            }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function cleanupKeyframes(args) {
+    try {
+        args = args || {};
+        var selection = getSelectedKeyedPropertiesFromActiveComp();
+        var comp = selection.comp;
+        var properties = selection.properties;
+        var mode = args.mode || "remove_duplicates";
+        var keepFirst = args.keepFirst !== false;
+        var keepLast = args.keepLast !== false;
+        var tolerance = hasValue(args.tolerance) ? parseFloat(args.tolerance) : 0;
+        var dryRun = args.dryRun === true;
+
+        if (isNaN(tolerance) || tolerance < 0) {
+            throw new Error("tolerance must be a valid number >= 0");
+        }
+
+        function isProtectedKey(index, numKeys) {
+            if (keepFirst && index === 1) return true;
+            if (keepLast && index === numKeys) return true;
+            return false;
+        }
+
+        function shouldRemove(prop, keyIndex) {
+            if (mode === "remove_odd" || mode === "remove_even") {
+                var frameIndex = Math.round(prop.keyTime(keyIndex) * comp.frameRate);
+                var parity = ((frameIndex % 2) + 2) % 2;
+                return mode === "remove_odd" ? parity === 1 : parity === 0;
+            }
+            if (mode === "remove_duplicates" || mode === "remove_unnecessary") {
+                if (keyIndex <= 1) return false;
+                var currentValue = safeKeyValue(prop, keyIndex);
+                var previousValue = safeKeyValue(prop, keyIndex - 1);
+                return valuesNearEqual(currentValue, previousValue, tolerance);
+            }
+            throw new Error("Unsupported cleanup mode: " + mode);
+        }
+
+        var results = [];
+        var totalRemoved = 0;
+        var protectedSkips = 0;
+
+        for (var p = 0; p < properties.length; p++) {
+            var prop = properties[p];
+            var layer = getPropertyOwningLayer(prop);
+            var removeIndexes = [];
+
+            for (var k = prop.numKeys; k >= 1; k--) {
+                if (!shouldRemove(prop, k)) continue;
+                if (isProtectedKey(k, prop.numKeys)) {
+                    protectedSkips++;
+                    continue;
+                }
+                removeIndexes.push(k);
+            }
+
+            if (!dryRun) {
+                for (var r = 0; r < removeIndexes.length; r++) {
+                    prop.removeKey(removeIndexes[r]);
+                }
+            }
+
+            totalRemoved += removeIndexes.length;
+            results.push({
+                layer: layer ? buildLayerSummary(layer) : null,
+                property: propertyLabel(prop),
+                removedKeys: removeIndexes.length,
+                mode: mode
+            });
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: dryRun ? "Cleanup preview generated successfully" : "Keyframe cleanup applied successfully",
+            composition: buildCompSummary(comp),
+            changed: dryRun ? [] : ["keyframes"],
+            dryRun: dryRun,
+            mode: mode,
+            keepFirst: keepFirst,
+            keepLast: keepLast,
+            tolerance: tolerance,
+            protectedSkips: protectedSkips,
+            removedKeys: totalRemoved,
+            results: results
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function setupRetimingMode(args) {
+    try {
+        args = args || {};
+        var selection = getSelectedKeyedPropertiesFromActiveComp();
+        var comp = selection.comp;
+        var properties = selection.properties;
+        var controllerName = args.controllerName || "Retiming Mode";
+        var defaultMode = args.defaultMode || "comp_end";
+        var modeItems = ["Comp End", "Comp Stretched", "Layer End", "Layer Stretched"];
+        var modeIndexMap = {
+            "comp_end": 1,
+            "comp_stretched": 2,
+            "layer_end": 3,
+            "layer_stretched": 4
+        };
+        var selectedIndex = modeIndexMap[defaultMode];
+        if (!selectedIndex) {
+            throw new Error("Unsupported defaultMode: " + defaultMode);
+        }
+
+        var expr =
+'var mode = effect("' + controllerName.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '")("Menu").value;\n' +
+'if (mode == 1) {\n' +
+'    var dur = thisComp.duration;\n' +
+'    var lastKeyTime = thisProperty.key(thisProperty.numKeys).time;\n' +
+'    valueAtTime(time - dur + lastKeyTime);\n' +
+'} else if (mode == 2) {\n' +
+'    var firstKeyTime = thisProperty.key(1).time;\n' +
+'    var lastKeyTime = thisProperty.key(thisProperty.numKeys).time;\n' +
+'    var t = linear(time, 0, thisComp.duration, firstKeyTime, lastKeyTime);\n' +
+'    valueAtTime(t);\n' +
+'} else if (mode == 3) {\n' +
+'    var dur = thisLayer.outPoint - thisLayer.inPoint;\n' +
+'    var lastKeyTime = thisProperty.key(thisProperty.numKeys).time;\n' +
+'    valueAtTime(time - dur + lastKeyTime);\n' +
+'} else if (mode == 4) {\n' +
+'    var firstKeyTime = thisProperty.key(1).time;\n' +
+'    var lastKeyTime = thisProperty.key(thisProperty.numKeys).time;\n' +
+'    var t = linear(time, thisLayer.inPoint, thisLayer.outPoint, firstKeyTime, lastKeyTime);\n' +
+'    valueAtTime(t);\n' +
+'} else {\n' +
+'    value;\n' +
+'}';
+
+        var processedLayers = [];
+        var createdControllers = [];
+        var linkedProperties = [];
+        for (var i = 0; i < properties.length; i++) {
+            var prop = properties[i];
+            if (!prop.canSetExpression || prop.numKeys < 1) {
+                continue;
+            }
+            var layer = getPropertyOwningLayer(prop);
+            if (!layer) {
+                continue;
+            }
+
+            var layerSeen = false;
+            for (var s = 0; s < processedLayers.length; s++) {
+                if (processedLayers[s] === layer) {
+                    layerSeen = true;
+                    break;
+                }
+            }
+            if (!layerSeen) {
+                ensureDropdownControl(layer, controllerName, modeItems, selectedIndex);
+                processedLayers.push(layer);
+                createdControllers.push({
+                    layer: buildLayerSummary(layer),
+                    controllerName: controllerName
+                });
+            }
+
+            prop.expression = expr;
+            linkedProperties.push({
+                layer: buildLayerSummary(layer),
+                property: propertyLabel(prop)
+            });
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Retiming mode setup applied successfully",
+            composition: buildCompSummary(comp),
+            changed: ["expression", "controls"],
+            controllerName: controllerName,
+            defaultMode: defaultMode,
+            controllers: createdControllers,
+            linkedProperties: linkedProperties
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function createDropdownController(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        var controllerName = args.controllerName || "CTRL_NULL";
+        var menuItems = args.menuItems && args.menuItems.length ? args.menuItems : ["Option 1", "Option 2"];
+        var reuseIfExists = args.reuseIfExists !== false;
+
+        var matches = findLayersByName(comp, controllerName);
+        if (matches.length > 1) {
+            throw new Error("Layer name is ambiguous: '" + controllerName + "'");
+        }
+
+        var controllerLayer = null;
+        var created = false;
+        if (matches.length === 1) {
+            if (!reuseIfExists) {
+                throw new Error("Controller already exists: '" + controllerName + "'");
+            }
+            controllerLayer = matches[0];
+        } else {
+            controllerLayer = comp.layers.addNull();
+            controllerLayer.name = controllerName;
+            created = true;
+        }
+
+        var dropdownName = args.dropdownName || "Dropdown";
+        var selectedIndex = hasValue(args.selectedIndex) ? parseInt(args.selectedIndex, 10) : 1;
+        if (isNaN(selectedIndex) || selectedIndex < 1) {
+            selectedIndex = 1;
+        }
+        if (selectedIndex > menuItems.length) {
+            selectedIndex = menuItems.length;
+        }
+
+        var dropdown = ensureDropdownControl(controllerLayer, dropdownName, menuItems, selectedIndex);
+        controllerLayer = comp.layer(controllerLayer.index);
+        dropdown = findEffectByName(controllerLayer, dropdownName);
+
+        return JSON.stringify({
+            status: "success",
+            message: "Dropdown controller ready",
+            composition: buildCompSummary(comp),
+            layer: buildLayerSummary(controllerLayer),
+            changed: ["controls"],
+            created: created ? ["layer"] : [],
+            controller: {
+                name: controllerLayer.name,
+                index: controllerLayer.index,
+                created: created
+            },
+            dropdown: {
+                name: dropdown.name,
+                selectedIndex: selectedIndex,
+                menuItems: menuItems
+            }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function linkOpacityToDropdown(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        var controllerName = args.controllerName || "CTRL_NULL";
+        var dropdownName = args.dropdownName || "Dropdown";
+        var mappingMode = args.mappingMode || "exclusive";
+        var targetLayers = resolveMultipleLayersInComp(comp, args);
+        var controllerMatches = findLayersByName(comp, controllerName);
+
+        if (!controllerMatches.length) {
+            throw new Error("Controller layer not found: " + controllerName);
+        }
+        if (controllerMatches.length > 1) {
+            throw new Error("Controller layer name is ambiguous: '" + controllerName + "'");
+        }
+
+        var controllerLayer = controllerMatches[0];
+        var dropdown = findEffectByName(controllerLayer, dropdownName);
+        if (!dropdown || !dropdown.property(1) || !dropdown.property(1).isDropdownEffect) {
+            throw new Error("Dropdown control not found on controller layer: " + dropdownName);
+        }
+
+        var compNameEsc = comp.name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        var controllerNameEsc = controllerName.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        var dropdownNameEsc = dropdownName.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        var linked = [];
+
+        for (var i = 0; i < targetLayers.length; i++) {
+            var layer = targetLayers[i];
+            var checkValue = i + 1;
+            var expr;
+            if (mappingMode === "threshold") {
+                expr =
+'var ctrl = comp("' + compNameEsc + '").layer("' + controllerNameEsc + '").effect("' + dropdownNameEsc + '")("Menu");\n' +
+'ctrl >= ' + checkValue + ' ? 100 : 0;';
+            } else {
+                expr =
+'var ctrl = comp("' + compNameEsc + '").layer("' + controllerNameEsc + '").effect("' + dropdownNameEsc + '")("Menu");\n' +
+'ctrl == ' + checkValue + ' ? 100 : 0;';
+            }
+
+            var opacityProp = layer.property("ADBE Transform Group").property("ADBE Opacity");
+            opacityProp.expression = expr;
+            linked.push({
+                layer: buildLayerSummary(layer),
+                menuValue: checkValue
+            });
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Opacity linked to dropdown successfully",
+            composition: buildCompSummary(comp),
+            controller: {
+                name: controllerLayer.name,
+                index: controllerLayer.index,
+                dropdownName: dropdownName
+            },
+            changed: ["expression"],
+            mappingMode: mappingMode,
+            linkedLayers: linked
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
     }
 }
 
@@ -1366,19 +3041,210 @@ function getResultFilePath() {
     return bridgeFolder.fsName + "/ae_mcp_result.json";
 }
 
+function getProjectItems(args) {
+    try {
+        args = args || {};
+        var itemType = args.itemType || null;
+        var nameContains = hasValue(args.nameContains) ? String(args.nameContains) : null;
+        var includeCompDetails = args.includeCompDetails !== false;
+        var items = [];
+
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            var summary = buildProjectItemSummary(item);
+            if (itemType && summary.type !== itemType) {
+                continue;
+            }
+            if (nameContains && summary.name.toLowerCase().indexOf(nameContains.toLowerCase()) === -1) {
+                continue;
+            }
+            if (!includeCompDetails && summary.type === "Composition") {
+                delete summary.width;
+                delete summary.height;
+                delete summary.duration;
+                delete summary.frameRate;
+                delete summary.numLayers;
+            }
+            items.push(summary);
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Project items retrieved successfully",
+            itemType: itemType,
+            nameContains: nameContains,
+            count: items.length,
+            items: items
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function findProjectItem(args) {
+    try {
+        args = args || {};
+        var itemId = hasValue(args.itemId) ? parseInt(args.itemId, 10) : null;
+        var exactName = hasValue(args.exactName) ? String(args.exactName) : null;
+        var itemType = args.itemType || null;
+        var matches = [];
+
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            var summary = buildProjectItemSummary(item);
+            if (itemType && summary.type !== itemType) {
+                continue;
+            }
+            if (itemId !== null && summary.id !== itemId) {
+                continue;
+            }
+            if (exactName && summary.name !== exactName) {
+                continue;
+            }
+            matches.push(summary);
+        }
+
+        if (itemId !== null && !matches.length) {
+            throw new Error("Project item not found for id " + itemId);
+        }
+        if (exactName && !matches.length) {
+            throw new Error("Project item not found for name '" + exactName + "'");
+        }
+        if (itemId === null && !exactName) {
+            throw new Error("Provide itemId or exactName");
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Project item lookup completed",
+            itemId: itemId,
+            exactName: exactName,
+            itemType: itemType,
+            matchCount: matches.length,
+            resolved: matches.length === 1 ? matches[0] : null,
+            matches: matches
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function setActiveComp(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        activateComposition(comp);
+        return JSON.stringify({
+            status: "success",
+            message: "Composition activated successfully",
+            composition: buildCompSummary(comp)
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function clearLayerSelection(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        activateComposition(comp);
+        var cleared = [];
+        for (var i = 1; i <= comp.numLayers; i++) {
+            var layer = comp.layer(i);
+            if (layer.selected) {
+                cleared.push(buildLayerSummary(layer));
+            }
+            layer.selected = false;
+        }
+        return JSON.stringify({
+            status: "success",
+            message: "Layer selection cleared successfully",
+            composition: buildCompSummary(comp),
+            clearedCount: cleared.length,
+            clearedLayers: cleared
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function selectLayers(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        activateComposition(comp);
+        var replaceSelection = args.replaceSelection !== false;
+        var resolved = [];
+        var seen = {};
+
+        if (replaceSelection) {
+            for (var i = 1; i <= comp.numLayers; i++) {
+                comp.layer(i).selected = false;
+            }
+        }
+
+        var indexedLayers = resolveLayersByIndexes(comp, args.layerIndexes || []);
+        for (var ix = 0; ix < indexedLayers.length; ix++) {
+            var indexedLayer = indexedLayers[ix];
+            if (!seen[indexedLayer.index]) {
+                resolved.push(indexedLayer);
+                seen[indexedLayer.index] = true;
+            }
+        }
+
+        var namedLayers = args.layerNames && args.layerNames.length
+            ? resolveMultipleLayersInComp(comp, { layerNames: args.layerNames })
+            : [];
+        for (var nx = 0; nx < namedLayers.length; nx++) {
+            var namedLayer = namedLayers[nx];
+            if (!seen[namedLayer.index]) {
+                resolved.push(namedLayer);
+                seen[namedLayer.index] = true;
+            }
+        }
+
+        if (!resolved.length) {
+            throw new Error("No layers resolved for selection");
+        }
+
+        for (var s = 0; s < resolved.length; s++) {
+            resolved[s].selected = true;
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Layers selected successfully",
+            composition: buildCompSummary(comp),
+            replaceSelection: replaceSelection,
+            selectedCount: resolved.length,
+            selectedLayers: buildLayerListSummary(resolved)
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function getLayerDetails(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        var layer = resolveSingleLayerInComp(comp, args);
+        return JSON.stringify({
+            status: "success",
+            message: "Layer details retrieved successfully",
+            composition: buildCompSummary(comp),
+            layer: buildLayerDetails(layer)
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
 // --- setCompositionProperties: set duration, frameRate, etc. on active or named comp ---
 function setCompositionProperties(args) {
     try {
-        var compName = args.compName || "";
-        var comp = null;
-        for (var i = 1; i <= app.project.numItems; i++) {
-            var item = app.project.item(i);
-            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
-        }
-        if (!comp) {
-            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
-            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
-        }
+        var comp = resolveComposition(args);
         var changed = [];
         if (args.duration !== undefined && args.duration !== null) { comp.duration = args.duration; changed.push("duration"); }
         if (args.frameRate !== undefined && args.frameRate !== null) { comp.frameRate = args.frameRate; changed.push("frameRate"); }
@@ -1387,7 +3253,7 @@ function setCompositionProperties(args) {
         }
         return JSON.stringify({
             status: "success",
-            composition: { name: comp.name, duration: comp.duration, frameRate: comp.frameRate, width: comp.width, height: comp.height },
+            composition: buildCompSummary(comp),
             changedProperties: changed
         }, null, 2);
     } catch (error) {
@@ -1524,7 +3390,7 @@ function getLayerInfo() {
 }
 
 // Execute command
-function executeCommand(command, args) {
+function executeCommand(command, args, commandData) {
     var result = "";
 
     logToPanel("Executing command: " + command);
@@ -1535,6 +3401,24 @@ function executeCommand(command, args) {
         logToPanel("Attempting to execute: " + command); // Log before switch
         // Use a switch statement for clarity
         switch (command) {
+            case "getProjectItems":
+                result = getProjectItems(args);
+                break;
+            case "findProjectItem":
+                result = findProjectItem(args);
+                break;
+            case "setActiveComp":
+                result = setActiveComp(args);
+                break;
+            case "clearLayerSelection":
+                result = clearLayerSelection(args);
+                break;
+            case "selectLayers":
+                result = selectLayers(args);
+                break;
+            case "getLayerDetails":
+                result = getLayerDetails(args);
+                break;
             case "getProjectInfo":
                 result = getProjectInfo();
                 break;
@@ -1571,12 +3455,12 @@ function executeCommand(command, args) {
                 break;
             case "setLayerKeyframe":
                 logToPanel("Calling setLayerKeyframe function...");
-                result = setLayerKeyframe(args.compIndex, args.layerIndex, args.propertyName, args.timeInSeconds, args.value);
+                result = setLayerKeyframe(args);
                 logToPanel("Returned from setLayerKeyframe.");
                 break;
             case "setLayerExpression":
                 logToPanel("Calling setLayerExpression function...");
-                result = setLayerExpression(args.compIndex, args.layerIndex, args.propertyName, args.expressionString);
+                result = setLayerExpression(args);
                 logToPanel("Returned from setLayerExpression.");
                 break;
             case "applyEffect":
@@ -1593,6 +3477,56 @@ function executeCommand(command, args) {
                 logToPanel("Calling bridgeTestEffects function...");
                 result = bridgeTestEffects(args);
                 logToPanel("Returned from bridgeTestEffects.");
+                break;
+            case "enableMotionBlur":
+                logToPanel("Calling enableMotionBlur function...");
+                result = enableMotionBlur(args);
+                logToPanel("Returned from enableMotionBlur.");
+                break;
+            case "sequenceLayerPosition":
+                logToPanel("Calling sequenceLayerPosition function...");
+                result = sequenceLayerPosition(args);
+                logToPanel("Returned from sequenceLayerPosition.");
+                break;
+            case "copyPathsToMasks":
+                logToPanel("Calling copyPathsToMasks function...");
+                result = copyPathsToMasks(args);
+                logToPanel("Returned from copyPathsToMasks.");
+                break;
+            case "setupTypewriterText":
+                logToPanel("Calling setupTypewriterText function...");
+                result = setupTypewriterText(args);
+                logToPanel("Returned from setupTypewriterText.");
+                break;
+            case "createTimerRig":
+                logToPanel("Calling createTimerRig function...");
+                result = createTimerRig(args);
+                logToPanel("Returned from createTimerRig.");
+                break;
+            case "applyBwTint":
+                logToPanel("Calling applyBwTint function...");
+                result = applyBwTint(args);
+                logToPanel("Returned from applyBwTint.");
+                break;
+            case "cleanupKeyframes":
+                logToPanel("Calling cleanupKeyframes function...");
+                result = cleanupKeyframes(args);
+                logToPanel("Returned from cleanupKeyframes.");
+                break;
+            case "setupRetimingMode":
+                logToPanel("Calling setupRetimingMode function...");
+                result = setupRetimingMode(args);
+                logToPanel("Returned from setupRetimingMode.");
+                break;
+            case "createDropdownController":
+                logToPanel("Calling createDropdownController function...");
+                result = createDropdownController(args);
+                logToPanel("Returned from createDropdownController.");
+                break;
+            case "linkOpacityToDropdown":
+                logToPanel("Calling linkOpacityToDropdown function...");
+                result = linkOpacityToDropdown(args);
+                logToPanel("Returned from linkOpacityToDropdown.");
                 break;
             case "createCamera":
                 logToPanel("Calling createCamera function...");
@@ -1631,21 +3565,8 @@ function executeCommand(command, args) {
         
         // Save the result (ensure result is always a string)
         logToPanel("Preparing to write result file...");
-        var resultString = (typeof result === 'string') ? result : JSON.stringify(result);
-        
-        // Try to parse the result as JSON to add a timestamp
-        try {
-            var resultObj = JSON.parse(resultString);
-            // Add a timestamp to help identify if we're getting fresh results
-            resultObj._responseTimestamp = new Date().toISOString();
-            resultObj._commandExecuted = command;
-            resultString = JSON.stringify(resultObj, null, 2);
-            logToPanel("Added timestamp to result JSON for tracking freshness.");
-        } catch (parseError) {
-            // If it's not valid JSON, append the timestamp as a comment
-            logToPanel("Could not parse result as JSON to add timestamp: " + parseError.toString());
-            // We'll still continue with the original string
-        }
+        var resultString = normalizeCommandResult(command, args, commandData, result);
+        logToPanel("Normalized result JSON for tracking freshness and command identity.");
         
         var resultFile = new File(getResultFilePath());
         resultFile.encoding = "UTF-8"; // Ensure UTF-8 encoding
@@ -1685,9 +3606,8 @@ function executeCommand(command, args) {
         // Write detailed error to result file
         try {
             logToPanel("Attempting to write ERROR to result file...");
-            var errorResult = JSON.stringify({ 
+            var errorResult = normalizeCommandResult(command, args, commandData, { 
                 status: "error", 
-                command: command,
                 message: error.toString(),
                 line: error.line,
                 fileName: error.fileName
@@ -1775,7 +3695,7 @@ function checkForCommands() {
                     updateCommandStatus("running");
                     
                     // Execute the command
-                    executeCommand(commandData.command, commandData.args || {});
+                    executeCommand(commandData.command, commandData.args || {}, commandData);
                 }
             }
         }

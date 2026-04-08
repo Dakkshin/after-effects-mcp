@@ -112,21 +112,42 @@ function readResultsFromTempFile(): string {
   }
 }
 
+function createCommandId(command: string): string {
+  return `${command}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+type WaitForBridgeResultOptions = {
+  expectedCommand?: string;
+  expectedCommandId?: string;
+  timeoutMs?: number;
+  pollMs?: number;
+};
+
 // Helper to wait for a fresh result produced by a specific command
-async function waitForBridgeResult(expectedCommand?: string, timeoutMs: number = 5000, pollMs: number = 250): Promise<string> {
+async function waitForBridgeResult(options: WaitForBridgeResultOptions = {}): Promise<string> {
+  const { expectedCommand, expectedCommandId, timeoutMs = 5000, pollMs = 250 } = options;
   const start = Date.now();
   const resultPath = path.join(getAETempDir(), 'ae_mcp_result.json');
-  let lastSize = -1;
+  let lastContent = "";
 
   while (Date.now() - start < timeoutMs) {
     if (fs.existsSync(resultPath)) {
       try {
         const content = fs.readFileSync(resultPath, 'utf8');
-        if (content && content.length > 0 && content.length !== lastSize) {
-          lastSize = content.length;
+        if (content && content.length > 0 && content !== lastContent) {
+          lastContent = content;
           try {
             const parsed = JSON.parse(content);
-            if (!expectedCommand || parsed._commandExecuted === expectedCommand) {
+            if (parsed?.status === "waiting" && parsed?._placeholder === true) {
+              continue;
+            }
+            if (expectedCommand && parsed?._commandExecuted !== expectedCommand) {
+              continue;
+            }
+            if (expectedCommandId && parsed?._commandId !== expectedCommandId) {
+              continue;
+            }
+            if (!expectedCommand || parsed?._commandExecuted === expectedCommand) {
               return content;
             }
           } catch {
@@ -139,28 +160,35 @@ async function waitForBridgeResult(expectedCommand?: string, timeoutMs: number =
     }
     await new Promise(r => setTimeout(r, pollMs));
   }
-  return JSON.stringify({ error: `Timed out waiting for bridge result${expectedCommand ? ` for command '${expectedCommand}'` : ''}.` });
+  return JSON.stringify({
+    status: "error",
+    message: `Timed out waiting for bridge result${expectedCommand ? ` for command '${expectedCommand}'` : ''}${expectedCommandId ? ` (${expectedCommandId})` : ""}.`,
+    command: expectedCommand || null,
+    commandId: expectedCommandId || null
+  });
 }
 
 // Helper function to write command to file
-function writeCommandFile(command: string, args: Record<string, any> = {}): void {
+function writeCommandFile(command: string, args: Record<string, any> = {}, commandId: string = createCommandId(command)): string {
   try {
     const commandFile = path.join(getAETempDir(), 'ae_command.json');
     const commandData = {
       command,
       args,
+      commandId,
       timestamp: new Date().toISOString(),
       status: "pending"  // pending, running, completed, error
     };
     fs.writeFileSync(commandFile, JSON.stringify(commandData, null, 2));
-    console.error(`Command "${command}" written to ${commandFile}`);
+    console.error(`Command "${command}" (${commandId}) written to ${commandFile}`);
   } catch (error) {
     console.error("Error writing command file:", error);
   }
+  return commandId;
 }
 
 // Helper function to clear the results file to avoid stale cache
-function clearResultsFile(): void {
+function clearResultsFile(commandId?: string, command?: string): void {
   try {
     const resultFile = path.join(getAETempDir(), 'ae_mcp_result.json');
     
@@ -168,7 +196,10 @@ function clearResultsFile(): void {
     const resetData = {
       status: "waiting",
       message: "Waiting for new result from After Effects...",
-      timestamp: new Date().toISOString()
+      command: command || null,
+      commandId: commandId || null,
+      timestamp: new Date().toISOString(),
+      _placeholder: true
     };
     
     fs.writeFileSync(resultFile, JSON.stringify(resetData, null, 2));
@@ -178,15 +209,24 @@ function clearResultsFile(): void {
   }
 }
 
+function queueBridgeCommand(command: string, args: Record<string, any> = {}): string {
+  const commandId = createCommandId(command);
+  clearResultsFile(commandId, command);
+  return writeCommandFile(command, { ...args, commandId }, commandId);
+}
+
+function describeQueuedCommand(command: string, commandId: string): string {
+  return `Command "${command}" has been queued.\nCommand ID: ${commandId}`;
+}
+
 // Add a resource to expose project compositions
 server.resource(
   "compositions",
   "aftereffects://compositions",
   async (uri) => {
     // Clear old results, queue the command, and wait for bridge output
-    clearResultsFile();
-    writeCommandFile("listCompositions", {});
-    const result = await waitForBridgeResult("listCompositions", 6000, 250);
+    const commandId = queueBridgeCommand("listCompositions", {});
+    const result = await waitForBridgeResult({ expectedCommand: "listCompositions", expectedCommandId: commandId, timeoutMs: 6000, pollMs: 250 });
 
     return {
       contents: [{
@@ -209,6 +249,12 @@ server.tool(
   async ({ script, parameters = {} }) => {
     // Validate that script is safe (only allow predefined scripts)
     const allowedScripts = [
+      "getProjectItems",
+      "findProjectItem",
+      "setActiveComp",
+      "clearLayerSelection",
+      "selectLayers",
+      "getLayerDetails",
       "listCompositions", 
       "getProjectInfo", 
       "getLayerInfo", 
@@ -223,6 +269,16 @@ server.tool(
       "applyEffectTemplate",
       "test-animation",
       "bridgeTestEffects",
+      "enableMotionBlur",
+      "sequenceLayerPosition",
+      "copyPathsToMasks",
+      "setupTypewriterText",
+      "createTimerRig",
+      "applyBwTint",
+      "cleanupKeyframes",
+      "setupRetimingMode",
+      "createDropdownController",
+      "linkOpacityToDropdown",
       "createCamera",
       "batchSetLayerProperties",
       "setCompositionProperties",
@@ -244,17 +300,13 @@ server.tool(
     }
 
     try {
-      // Clear any stale result data
-      clearResultsFile();
-      
-      // Write command to file for After Effects to pick up
-      writeCommandFile(script, parameters);
+      const commandId = queueBridgeCommand(script, parameters);
       
       return {
         content: [
           {
             type: "text",
-            text: `Command to run "${script}" has been queued.\n` +
+            text: `${describeQueuedCommand(script, commandId)}\n` +
                   `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
                   `Use the "get-results" tool after a few seconds to check for results.`
           }
@@ -278,10 +330,48 @@ server.tool(
 server.tool(
   "get-results",
   "Get results from the last script executed in After Effects",
-  {},
-  async () => {
+  {
+    commandId: z.string().optional().describe("Optional command id to verify against the latest bridge result."),
+    command: z.string().optional().describe("Optional command name to verify against the latest bridge result.")
+  },
+  async ({ commandId, command }) => {
     try {
       const result = readResultsFromTempFile();
+      if (commandId || command) {
+        const parsed = JSON.parse(result);
+        if (commandId && parsed?._commandId !== commandId && parsed?.commandId !== commandId) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  status: "error",
+                  message: `Latest result does not match command id '${commandId}'.`,
+                  requestedCommandId: commandId,
+                  actualCommandId: parsed?._commandId || parsed?.commandId || null
+                }, null, 2)
+              }
+            ],
+            isError: true
+          };
+        }
+        if (command && parsed?._commandExecuted !== command && parsed?.command !== command) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  status: "error",
+                  message: `Latest result does not match command '${command}'.`,
+                  requestedCommand: command,
+                  actualCommand: parsed?._commandExecuted || parsed?.command || null
+                }, null, 2)
+              }
+            ],
+            isError: true
+          };
+        }
+      }
       return {
         content: [
           {
@@ -392,6 +482,12 @@ To use this integration with After Effects, follow these steps:
    - This will retrieve the results from After Effects
 
 Available scripts:
+- getProjectItems: List project items with optional filtering
+- findProjectItem: Resolve a project item by exact name or id
+- setActiveComp: Activate a composition by name or index
+- clearLayerSelection: Clear layer selection in a target composition
+- selectLayers: Select layers by name or index in a target composition
+- getLayerDetails: Detailed information for a specific layer
 - getProjectInfo: Information about the current project
 - listCompositions: List all compositions in the project
 - getLayerInfo: Information about layers in the active composition
@@ -402,6 +498,16 @@ Available scripts:
 - setLayerProperties: Set properties for a layer
 - setLayerKeyframe: Set a keyframe for a layer property
 - setLayerExpression: Set an expression for a layer property
+- enableMotionBlur: Enable motion blur on active, named, or all compositions
+- sequenceLayerPosition: Sequence selected or named layers by position offsets
+- copyPathsToMasks: Copy selected shape paths into masks
+- setupTypewriterText: Add a typewriter rig to a text layer
+- createTimerRig: Create a timer text rig with controls
+- applyBwTint: Apply a reusable tint treatment to selected or named layers
+- cleanupKeyframes: Clean up selected keyframes by mode
+- setupRetimingMode: Apply retiming expressions and controllers to selected properties
+- createDropdownController: Create or reuse a null controller with a dropdown menu
+- linkOpacityToDropdown: Link target layer opacity to a dropdown controller
 - applyEffect: Apply an effect to a layer
 - applyEffectTemplate: Apply a predefined effect template to a layer
 
@@ -442,14 +548,14 @@ server.tool(
   },
   async (params) => {
     try {
-      // Write command to file for After Effects to pick up
-      writeCommandFile("createComposition", params);
+      const commandId = queueBridgeCommand("createComposition", params);
       
       return {
         content: [
           {
             type: "text",
-            text: `Command to create composition "${params.name}" has been queued.\n` +
+            text: `${describeQueuedCommand("createComposition", commandId)}\n` +
+                  `Composition: ${params.name}\n` +
                   `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
                   `Use the "get-results" tool after a few seconds to check for results.`
           }
@@ -471,36 +577,241 @@ server.tool(
 
 // --- BEGIN NEW TOOLS --- 
 
-// Zod schema for common layer identification
-const LayerIdentifierSchema = {
-  compIndex: z.number().int().positive().describe("1-based index of the target composition in the project panel."),
-  layerIndex: z.number().int().positive().describe("1-based index of the target layer within the composition.")
+// Zod schema for common layer targeting
+const LayerTargetingSchema = {
+  compIndex: z.number().int().positive().optional().describe("Optional 1-based composition index. Kept for backward compatibility."),
+  compName: z.string().optional().describe("Optional exact composition name."),
+  layerIndex: z.number().int().positive().optional().describe("Optional 1-based layer index. Kept for backward compatibility."),
+  layerName: z.string().optional().describe("Optional exact layer name."),
+  useSelectedLayer: z.boolean().optional().describe("When true, target the single selected layer in the active composition.")
+};
+
+const CompositionTargetingSchema = {
+  compIndex: z.number().int().positive().optional().describe("Optional 1-based composition index. Kept for backward compatibility."),
+  compName: z.string().optional().describe("Optional exact composition name. Defaults to the active composition.")
+};
+
+const LayerSelectionSchema = {
+  ...CompositionTargetingSchema,
+  layerNames: z.array(z.string()).optional().describe("Optional exact layer names to target."),
+  layerIndexes: z.array(z.number().int().positive()).optional().describe("Optional 1-based layer indexes to target."),
+  replaceSelection: z.boolean().optional().describe("When true, clear the current layer selection before selecting the targets.")
 };
 
 // Zod schema for keyframe value (more specific types might be needed depending on property)
 // Using z.any() for flexibility, but can be refined (e.g., z.array(z.number()) for position/scale)
 const KeyframeValueSchema = z.unknown().describe("The value for the keyframe (e.g., [x,y] for Position, [w,h] for Scale, angle for Rotation, percentage for Opacity)");
 
+server.tool(
+  "get-project-items",
+  "List project items with optional type and name filters.",
+  {
+    itemType: z.enum(["Composition", "Folder", "Footage", "Solid"]).optional().describe("Optional project item type filter."),
+    nameContains: z.string().optional().describe("Optional case-insensitive substring filter on item names."),
+    includeCompDetails: z.boolean().optional().describe("When false, omit width/height/duration/frameRate fields for compositions.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("getProjectItems", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("getProjectItems", commandId)}\nUse the "get-results" tool after a few seconds to inspect the filtered item list.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing get-project-items command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "find-project-item",
+  "Resolve a project item by exact name or item id.",
+  {
+    itemId: z.number().int().positive().optional().describe("Optional project item id."),
+    exactName: z.string().optional().describe("Optional exact project item name."),
+    itemType: z.enum(["Composition", "Folder", "Footage", "Solid"]).optional().describe("Optional project item type filter.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("findProjectItem", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("findProjectItem", commandId)}\nUse the "get-results" tool after a few seconds to inspect the resolved item or match list.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing find-project-item command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "set-active-comp",
+  "Activate a composition in After Effects by name or index.",
+  {
+    ...CompositionTargetingSchema
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("setActiveComp", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("setActiveComp", commandId)}\nUse the "get-results" tool after a few seconds to confirm the active composition change.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing set-active-comp command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "clear-layer-selection",
+  "Clear layer selection in the active or named composition.",
+  {
+    ...CompositionTargetingSchema
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("clearLayerSelection", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("clearLayerSelection", commandId)}\nUse the "get-results" tool after a few seconds to confirm the cleared selection.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing clear-layer-selection command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "select-layers",
+  "Select one or more layers by name or index in the active or named composition.",
+  {
+    ...LayerSelectionSchema
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("selectLayers", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("selectLayers", commandId)}\nUse the "get-results" tool after a few seconds to inspect the selected layer set.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing select-layers command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "get-layer-details",
+  "Get detailed information for a single layer in the active or named composition.",
+  {
+    ...LayerTargetingSchema
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("getLayerDetails", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("getLayerDetails", commandId)}\nUse the "get-results" tool after a few seconds to inspect layer details, switches, effects, and masks.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing get-layer-details command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
 // Tool for setting a layer keyframe
 server.tool(
   "setLayerKeyframe", // Corresponds to the function name in ExtendScript
   "Set a keyframe for a specific layer property at a given time.",
   {
-    ...LayerIdentifierSchema, // Reuse common identifiers
+    ...LayerTargetingSchema,
     propertyName: z.string().describe("Name of the property to keyframe (e.g., 'Position', 'Scale', 'Rotation', 'Opacity')."),
     timeInSeconds: z.number().describe("The time (in seconds) for the keyframe."),
     value: KeyframeValueSchema
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("setLayerKeyframe", parameters);
+      const commandId = queueBridgeCommand("setLayerKeyframe", parameters);
       
       return {
         content: [
           {
             type: "text",
-            text: `Command to set keyframe for "${parameters.propertyName}" on layer ${parameters.layerIndex} in comp ${parameters.compIndex} has been queued.\n` +
+            text: `${describeQueuedCommand("setLayerKeyframe", commandId)}\n` +
+                  `Property: ${parameters.propertyName}\n` +
                   `Use the "get-results" tool after a few seconds to check for confirmation.`
           }
         ]
@@ -524,20 +835,20 @@ server.tool(
   "setLayerExpression", // Corresponds to the function name in ExtendScript
   "Set or remove an expression for a specific layer property.",
   {
-    ...LayerIdentifierSchema, // Reuse common identifiers
+    ...LayerTargetingSchema,
     propertyName: z.string().describe("Name of the property to apply the expression to (e.g., 'Position', 'Scale', 'Rotation', 'Opacity')."),
     expressionString: z.string().describe("The JavaScript expression string. Provide an empty string (\"\") to remove the expression.")
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("setLayerExpression", parameters);
+      const commandId = queueBridgeCommand("setLayerExpression", parameters);
       
       return {
         content: [
           {
             type: "text",
-            text: `Command to set expression for "${parameters.propertyName}" on layer ${parameters.layerIndex} in comp ${parameters.compIndex} has been queued.\n` +
+            text: `${describeQueuedCommand("setLayerExpression", commandId)}\n` +
+                  `Property: ${parameters.propertyName}\n` +
                   `Use the "get-results" tool after a few seconds to check for confirmation.`
           }
         ]
@@ -548,6 +859,365 @@ server.tool(
           {
             type: "text",
             text: `Error queuing setLayerExpression command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "enable-motion-blur",
+  "Enable motion blur on layers in the active comp, a named comp, or all comps.",
+  {
+    scope: z.enum(["active_comp", "named_comp", "all_comps"]).optional().describe("Which composition scope to update."),
+    compName: z.string().optional().describe("Exact composition name when scope is named_comp."),
+    includeLocked: z.boolean().optional().describe("When true, temporarily unlock locked layers to enable motion blur.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("enableMotionBlur", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("enableMotionBlur", commandId)}\nUse the "get-results" tool after a few seconds to check for confirmation.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing enable-motion-blur command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "sequence-layer-position",
+  "Apply ordered position offsets across selected or named layers.",
+  {
+    compName: z.string().optional().describe("Optional exact composition name. Defaults to active composition."),
+    layerNames: z.array(z.string()).optional().describe("Optional exact layer names to sequence."),
+    useSelectedLayers: z.boolean().optional().describe("When true, use the selected layers in the active composition."),
+    offsetX: z.number().optional().describe("Horizontal offset applied cumulatively per layer."),
+    offsetY: z.number().optional().describe("Vertical offset applied cumulatively per layer."),
+    order: z.enum(["layer_stack", "selection_order"]).optional().describe("Layer ordering to use while sequencing.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("sequenceLayerPosition", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("sequenceLayerPosition", commandId)}\nUse the "get-results" tool after a few seconds to check for confirmation.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing sequence-layer-position command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "copy-paths-to-masks",
+  "Copy selected shape paths into masks on the source layer or selected target layers.",
+  {
+    compName: z.string().optional().describe("Optional exact composition name. The composition must be active for selected-path workflows."),
+    targetLayerMode: z.enum(["same_layer", "selected_layers"]).optional().describe("Where copied masks should be created."),
+    layerNames: z.array(z.string()).optional().describe("Optional exact target layer names when targetLayerMode is selected_layers."),
+    useSelectedLayers: z.boolean().optional().describe("When true and targetLayerMode is selected_layers, use the selected layers as destinations."),
+    maskMode: z.enum(["add", "subtract", "intersect", "none"]).optional().describe("Mask mode for created masks.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("copyPathsToMasks", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("copyPathsToMasks", commandId)}\nUse the "get-results" tool after a few seconds to check for confirmation.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing copy-paths-to-masks command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "setup-typewriter-text",
+  "Apply a typewriter setup to a target text layer using a reusable controller.",
+  {
+    compName: z.string().optional().describe("Optional exact composition name. Defaults to active composition."),
+    layerName: z.string().optional().describe("Optional exact text layer name."),
+    useSelectedLayer: z.boolean().optional().describe("When true, use the single selected text layer in the active comp."),
+    speed: z.number().optional().describe("Characters per second."),
+    blinkSpeed: z.number().optional().describe("Cursor blink speed."),
+    startAt: z.number().optional().describe("Delay before typing starts in seconds."),
+    blinkOn: z.boolean().optional().describe("Whether to show the blinking cursor."),
+    controllerName: z.string().optional().describe("Controller layer name. Defaults to CTRL_Typewriter.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("setupTypewriterText", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("setupTypewriterText", commandId)}\nUse the "get-results" tool after a few seconds to check for confirmation.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing setup-typewriter-text command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "create-timer-rig",
+  "Create a timer text rig with built-in controls.",
+  {
+    compName: z.string().optional().describe("Optional exact composition name. Defaults to active composition."),
+    mode: z.enum(["countup", "countdown"]).optional().describe("Whether the timer counts up or down."),
+    timeFormat: z.enum(["HH:MM:SS", "MM:SS", "SS"]).optional().describe("How the timer should be displayed."),
+    rate: z.number().optional().describe("Playback rate multiplier."),
+    startHours: z.number().optional().describe("Starting hours."),
+    startMinutes: z.number().optional().describe("Starting minutes."),
+    startSeconds: z.number().optional().describe("Starting seconds."),
+    showMilliseconds: z.boolean().optional().describe("Whether to include milliseconds."),
+    allowNegativeTime: z.boolean().optional().describe("Whether to prefix negative time with a minus sign."),
+    layerName: z.string().optional().describe("Name of the created timer layer.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("createTimerRig", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("createTimerRig", commandId)}\nUse the "get-results" tool after a few seconds to check for confirmation.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing create-timer-rig command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "apply-bw-tint",
+  "Apply a reusable BW tint effect setup to selected or named layers.",
+  {
+    compName: z.string().optional().describe("Optional exact composition name. Defaults to active composition."),
+    layerNames: z.array(z.string()).optional().describe("Optional exact layer names to tint."),
+    useSelectedLayers: z.boolean().optional().describe("When true, use the selected layers in the active composition."),
+    amount: z.number().optional().describe("Tint amount from 0 to 100."),
+    presetName: z.enum(["Neutral", "Warm", "Gold", "Orange", "Sepia", "Cool", "Teal"]).optional().describe("Named tint preset."),
+    hexColor: z.string().optional().describe("Optional custom tint color in #RRGGBB or #RGB format."),
+    whiteishAmount: z.number().optional().describe("How much to push the tint toward white, from 0 to 100."),
+    skipLocked: z.boolean().optional().describe("Skip locked layers instead of modifying them.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("applyBwTint", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("applyBwTint", commandId)}\nUse the "get-results" tool after a few seconds to check for confirmation.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing apply-bw-tint command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "cleanup-keyframes",
+  "Clean up selected keyframes in the active composition.",
+  {
+    mode: z.enum(["remove_odd", "remove_even", "remove_duplicates", "remove_unnecessary"]).optional().describe("Cleanup mode to apply."),
+    dryRun: z.boolean().optional().describe("When true, only preview removals without deleting keys."),
+    keepFirst: z.boolean().optional().describe("Preserve the first keyframe on each property."),
+    keepLast: z.boolean().optional().describe("Preserve the last keyframe on each property."),
+    tolerance: z.number().optional().describe("Tolerance used for duplicate or unnecessary value comparisons.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("cleanupKeyframes", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("cleanupKeyframes", commandId)}\nUse the "get-results" tool after a few seconds to check for confirmation.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing cleanup-keyframes command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "setup-retiming-mode",
+  "Apply a retiming dropdown and expression to selected properties in the active composition.",
+  {
+    controllerName: z.string().optional().describe("Effect control name for the retiming dropdown."),
+    defaultMode: z.enum(["comp_end", "comp_stretched", "layer_end", "layer_stretched"]).optional().describe("Default retiming mode to select in the dropdown.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("setupRetimingMode", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("setupRetimingMode", commandId)}\nUse the "get-results" tool after a few seconds to check for confirmation.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing setup-retiming-mode command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "create-dropdown-controller",
+  "Create or reuse a null controller layer with a dropdown menu.",
+  {
+    compName: z.string().optional().describe("Optional exact composition name. Defaults to active composition."),
+    controllerName: z.string().optional().describe("Name of the null controller layer."),
+    dropdownName: z.string().optional().describe("Name of the dropdown effect."),
+    menuItems: z.array(z.string()).min(1).optional().describe("Menu items for the dropdown control."),
+    selectedIndex: z.number().int().positive().optional().describe("Initially selected dropdown item (1-based)."),
+    reuseIfExists: z.boolean().optional().describe("Reuse an existing controller layer when present.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("createDropdownController", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("createDropdownController", commandId)}\nUse the "get-results" tool after a few seconds to check for confirmation.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing create-dropdown-controller command: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "link-opacity-to-dropdown",
+  "Link selected or named layers to a dropdown controller by opacity expression.",
+  {
+    compName: z.string().optional().describe("Optional exact composition name. Defaults to active composition."),
+    controllerName: z.string().optional().describe("Name of the controller layer."),
+    dropdownName: z.string().optional().describe("Name of the dropdown effect."),
+    layerNames: z.array(z.string()).optional().describe("Optional exact layer names to link."),
+    useSelectedLayers: z.boolean().optional().describe("When true, use the selected layers in the active composition."),
+    mappingMode: z.enum(["exclusive", "threshold"]).optional().describe("Opacity mapping mode for the dropdown values.")
+  },
+  async (parameters) => {
+    try {
+      const commandId = queueBridgeCommand("linkOpacityToDropdown", parameters);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${describeQueuedCommand("linkOpacityToDropdown", commandId)}\nUse the "get-results" tool after a few seconds to check for confirmation.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing link-opacity-to-dropdown command: ${String(error)}`
           }
         ],
         isError: true
@@ -689,14 +1359,13 @@ server.tool(
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("applyEffect", parameters);
+      const commandId = queueBridgeCommand("applyEffect", parameters);
       
       return {
         content: [
           {
             type: "text",
-            text: `Command to apply effect to layer ${parameters.layerIndex} in composition ${parameters.compIndex} has been queued.\n` +
+            text: `${describeQueuedCommand("applyEffect", commandId)}\n` +
                   `Use the "get-results" tool after a few seconds to check for confirmation.`
           }
         ]
@@ -737,14 +1406,13 @@ server.tool(
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("applyEffectTemplate", parameters);
+      const commandId = queueBridgeCommand("applyEffectTemplate", parameters);
       
       return {
         content: [
           {
             type: "text",
-            text: `Command to apply effect template '${parameters.templateName}' to layer ${parameters.layerIndex} in composition ${parameters.compIndex} has been queued.\n` +
+            text: `${describeQueuedCommand("applyEffectTemplate", commandId)}\n` +
                   `Use the "get-results" tool after a few seconds to check for confirmation.`
           }
         ]
@@ -778,14 +1446,8 @@ server.tool(
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("applyEffect", parameters);
-      
-      // Wait a bit for After Effects to process the command
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Get the results
-      const result = readResultsFromTempFile();
+      const commandId = queueBridgeCommand("applyEffect", parameters);
+      const result = await waitForBridgeResult({ expectedCommand: "applyEffect", expectedCommandId: commandId, timeoutMs: 6000, pollMs: 250 });
       
       return {
         content: [
@@ -831,14 +1493,8 @@ server.tool(
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("applyEffectTemplate", parameters);
-      
-      // Wait a bit for After Effects to process the command
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Get the results
-      const result = readResultsFromTempFile();
+      const commandId = queueBridgeCommand("applyEffectTemplate", parameters);
+      const result = await waitForBridgeResult({ expectedCommand: "applyEffectTemplate", expectedCommandId: commandId, timeoutMs: 6000, pollMs: 250 });
       
       return {
         content: [
@@ -954,17 +1610,13 @@ server.tool(
   {},
   async () => {
     try {
-      // Clear any stale result data
-      clearResultsFile();
-      
-      // Write command to file for After Effects to pick up
-      writeCommandFile("bridgeTestEffects", {});
+      const commandId = queueBridgeCommand("bridgeTestEffects", {});
       
       return {
         content: [
           {
             type: "text",
-            text: `Bridge test effects command has been queued.\n` +
+            text: `${describeQueuedCommand("bridgeTestEffects", commandId)}\n` +
                   `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
                   `Use the "get-results" tool after a few seconds to check for the test results.`
           }
