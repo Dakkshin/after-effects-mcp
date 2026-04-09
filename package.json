@@ -6,8 +6,11 @@
   "type": "module",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=build/index.js --packages=external && copyfiles -u 1 \"src/scripts/**/*\" build",
+    "typecheck": "tsc --noEmit",
     "start": "node build/index.js",
     "install-bridge": "node install-bridge.js",
+    "evaluate-prompts": "node tools/evaluate-prompt-suite.mjs",
+    "release-readiness": "node tools/release-readiness.mjs",
     "postinstall": "npm run build"
   },
   "dependencies": {

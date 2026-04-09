@@ -35,6 +35,27 @@ function getIsoTimestamp() {
         padNumber(now.getUTCMilliseconds(), 3) + "Z";
 }
 
+function getBridgeFolderPath() {
+    var userFolder = Folder.myDocuments;
+    var bridgeFolder = new Folder(userFolder.fsName + "/ae-mcp-bridge");
+    if (!bridgeFolder.exists) {
+        bridgeFolder.create();
+    }
+    return bridgeFolder.fsName;
+}
+
+function getBridgeLogsFolderPath() {
+    var logsFolder = new Folder(getBridgeFolderPath() + "/logs");
+    if (!logsFolder.exists) {
+        logsFolder.create();
+    }
+    return logsFolder.fsName;
+}
+
+function getBridgeLogFilePath() {
+    return getBridgeLogsFolderPath() + "/ae_bridge_log.jsonl";
+}
+
 function getActiveComp() {
     if (app.project.activeItem instanceof CompItem) {
         return app.project.activeItem;
@@ -534,6 +555,273 @@ function resolvePropertyOnLayer(layer, propertyName) {
     }
 
     return property;
+}
+
+function listRequestedSetLayerProperties(args) {
+    var requested = [];
+    if (!args) {
+        return requested;
+    }
+    if (args.position !== undefined && args.position !== null) { requested.push("Position"); }
+    if (args.scale !== undefined && args.scale !== null) { requested.push("Scale"); }
+    if (args.rotation !== undefined && args.rotation !== null) { requested.push("Rotation"); }
+    if (args.opacity !== undefined && args.opacity !== null) { requested.push("Opacity"); }
+    if (args.text !== undefined && args.text !== null) { requested.push("Source Text"); }
+    if (args.fontFamily !== undefined && args.fontFamily !== null) { requested.push("Source Text"); }
+    if (args.fontSize !== undefined && args.fontSize !== null) { requested.push("Source Text"); }
+    if (args.fillColor !== undefined && args.fillColor !== null) { requested.push("Source Text"); }
+    return requested;
+}
+
+function inspectPropertyState(property) {
+    if (!property) {
+        return null;
+    }
+
+    var expressionText = "";
+    try {
+        expressionText = property.expression || "";
+    } catch (expressionError) {
+        expressionText = "";
+    }
+
+    return {
+        name: property.name,
+        matchName: property.matchName || "",
+        propertyType: property.propertyType || null,
+        canSetExpression: property.canSetExpression === true,
+        canVaryOverTime: property.canVaryOverTime === true,
+        expressionEnabled: property.expressionEnabled === true,
+        hasExpression: expressionText !== "",
+        writable: property.propertyType === PropertyType.PROPERTY
+    };
+}
+
+function preflightMutation(args) {
+    try {
+        args = args || {};
+        var command = args.command || "";
+        var mutationArgs = args.args || {};
+        var riskClass = args.riskClass || "low";
+        var response = {
+            status: "success",
+            command: command,
+            riskClass: riskClass,
+            checks: {
+                targetExists: true,
+                propertyWritable: null,
+                expressionDependencyRisk: "none",
+                checkpointRequired: riskClass === "high",
+                projectSaved: !!app.project.file,
+                checkpointPossible: !!app.project.file
+            },
+            target: null,
+            inspectedProperties: []
+        };
+        var comp = null;
+        var layer = null;
+        var layers = null;
+        var property = null;
+        var requested = null;
+        var i = 0;
+
+        function pushPropertyInspection(prop) {
+            var inspected = inspectPropertyState(prop);
+            if (inspected) {
+                response.inspectedProperties.push(inspected);
+                if (inspected.writable === false) {
+                    response.checks.propertyWritable = false;
+                } else if (response.checks.propertyWritable !== false) {
+                    response.checks.propertyWritable = true;
+                }
+                if (inspected.expressionEnabled || inspected.hasExpression) {
+                    response.checks.expressionDependencyRisk = "present";
+                }
+            }
+        }
+
+        switch (command) {
+            case "setLayerKeyframe":
+            case "setLayerExpression":
+                comp = resolveComposition(mutationArgs);
+                layer = resolveSingleLayerInComp(comp, mutationArgs);
+                property = resolvePropertyOnLayer(layer, mutationArgs.propertyName);
+                response.target = {
+                    composition: buildCompSummary(comp),
+                    layer: buildLayerSummary(layer),
+                    property: mutationArgs.propertyName
+                };
+                pushPropertyInspection(property);
+                break;
+            case "setLayerProperties":
+                comp = resolveComposition(mutationArgs);
+                layer = resolveSingleLayerInComp(comp, mutationArgs);
+                requested = listRequestedSetLayerProperties(mutationArgs);
+                response.target = {
+                    composition: buildCompSummary(comp),
+                    layer: buildLayerSummary(layer),
+                    properties: requested
+                };
+                for (i = 0; i < requested.length; i++) {
+                    pushPropertyInspection(resolvePropertyOnLayer(layer, requested[i]));
+                }
+                break;
+            case "applyEffect":
+            case "applyEffectTemplate":
+            case "applyBwTint":
+            case "duplicateLayer":
+            case "deleteLayer":
+            case "setLayerMask":
+                comp = resolveComposition(mutationArgs);
+                layer = resolveSingleLayerInComp(comp, mutationArgs);
+                response.target = {
+                    composition: buildCompSummary(comp),
+                    layer: buildLayerSummary(layer)
+                };
+                break;
+            case "enableMotionBlur":
+            case "createDropdownController":
+                comp = resolveComposition(mutationArgs);
+                response.target = {
+                    composition: buildCompSummary(comp)
+                };
+                break;
+            case "sequenceLayerPosition":
+            case "copyPathsToMasks":
+            case "createTimerRig":
+            case "linkOpacityToDropdown":
+                comp = resolveComposition(mutationArgs);
+                layers = resolveMultipleLayersInComp(comp, mutationArgs);
+                response.target = {
+                    composition: buildCompSummary(comp),
+                    layers: buildLayerListSummary(layers)
+                };
+                break;
+            case "setupTypewriterText":
+                comp = resolveComposition(mutationArgs);
+                layer = resolveSingleLayerInComp(comp, mutationArgs);
+                response.target = {
+                    composition: buildCompSummary(comp),
+                    layer: buildLayerSummary(layer)
+                };
+                break;
+            case "cleanupKeyframes":
+            case "setupRetimingMode":
+                comp = getActiveComp();
+                if (!comp) {
+                    throw new Error("An active composition is required for selected-property workflows");
+                }
+                response.target = {
+                    composition: buildCompSummary(comp),
+                    selectedLayers: buildLayerListSummary(comp.selectedLayers || [])
+                };
+                break;
+            case "setCompositionProperties":
+                comp = resolveComposition(mutationArgs);
+                response.target = {
+                    composition: buildCompSummary(comp)
+                };
+                break;
+            default:
+                response.target = null;
+                response.checks.targetExists = false;
+                response.checks.propertyWritable = null;
+                response.warning = "No command-specific preflight implementation exists for this command.";
+                break;
+        }
+
+        if (response.checks.checkpointRequired && !response.checks.projectSaved) {
+            response.checks.checkpointPossible = false;
+        }
+
+        return JSON.stringify(response, null, 2);
+    } catch (error) {
+        return JSON.stringify({
+            status: "error",
+            code: "PREFLIGHT_FAILED",
+            message: error.toString()
+        }, null, 2);
+    }
+}
+
+function prepareProjectCheckpoint(args) {
+    try {
+        var revisionBeforeSave = app.project.revision;
+        if (!app.project.file) {
+            return JSON.stringify({
+                status: "error",
+                code: "PROJECT_NOT_SAVED",
+                message: "Checkpoint creation requires a saved project."
+            }, null, 2);
+        }
+
+        app.project.save();
+
+        return JSON.stringify({
+            status: "success",
+            message: "Project prepared for checkpoint creation.",
+            label: args && args.label ? args.label : null,
+            projectName: app.project.file ? app.project.file.name : "Untitled Project",
+            projectPath: app.project.file ? app.project.file.fsName : "",
+            revisionBeforeSave: revisionBeforeSave,
+            revisionAfterSave: app.project.revision,
+            savedAt: getIsoTimestamp()
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({
+            status: "error",
+            code: "CHECKPOINT_PREPARE_FAILED",
+            message: error.toString()
+        }, null, 2);
+    }
+}
+
+function restoreCheckpoint(args) {
+    try {
+        args = args || {};
+        var checkpointPath = args.checkpointPath || "";
+        var branchPath = args.branchPath || "";
+        var branchBeforeRevert = args.branchBeforeRevert !== false;
+        var checkpointFile = new File(checkpointPath);
+        if (!checkpointFile.exists) {
+            throw new Error("Checkpoint file does not exist: " + checkpointPath);
+        }
+
+        var previousProjectPath = app.project.file ? app.project.file.fsName : "";
+        var previousRevision = app.project.revision;
+        var branchCreated = false;
+
+        if (branchBeforeRevert && branchPath) {
+            var branchFile = new File(branchPath);
+            if (branchFile.parent && !branchFile.parent.exists) {
+                branchFile.parent.create();
+            }
+            app.project.save(branchFile);
+            branchCreated = true;
+        }
+
+        app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);
+        app.open(checkpointFile);
+
+        return JSON.stringify({
+            status: "success",
+            message: "Checkpoint restored successfully.",
+            previousProjectPath: previousProjectPath,
+            previousRevision: previousRevision,
+            branchBeforeRevert: branchBeforeRevert,
+            branchCreated: branchCreated,
+            branchPath: branchCreated ? branchPath : "",
+            openedProjectPath: app.project.file ? app.project.file.fsName : "",
+            openedProjectName: app.project.file ? app.project.file.name : "Untitled Project",
+            revisionAfterOpen: app.project.revision
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({
+            status: "error",
+            code: "RESTORE_CHECKPOINT_FAILED",
+            message: error.toString()
+        }, null, 2);
+    }
 }
 
 function inferCreatedItems(command, resultObj) {
@@ -1308,6 +1596,149 @@ function createSolidLayer(args) {
     }
 }
 
+function normalizeRgbColorInput(colorValue, fallback) {
+    var fallbackColor = fallback || [0, 0, 0];
+    if (!hasValue(colorValue)) {
+        return fallbackColor;
+    }
+    if (colorValue instanceof Array && colorValue.length >= 3) {
+        return [Number(colorValue[0]), Number(colorValue[1]), Number(colorValue[2])];
+    }
+    if (typeof colorValue === "string") {
+        var hex = String(colorValue).replace(/^#/, "");
+        if (hex.length === 3) {
+            hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
+        }
+        if (hex.length === 6) {
+            return [
+                parseInt(hex.substr(0, 2), 16) / 255,
+                parseInt(hex.substr(2, 2), 16) / 255,
+                parseInt(hex.substr(4, 2), 16) / 255
+            ];
+        }
+    }
+    if (typeof colorValue === "object") {
+        return [
+            Number(colorValue.r || 0) / 255,
+            Number(colorValue.g || 0) / 255,
+            Number(colorValue.b || 0) / 255
+        ];
+    }
+    return fallbackColor;
+}
+
+function createBackgroundSolid(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        var startTime = hasValue(args.startTime) ? Number(args.startTime) : 0;
+        var duration = hasValue(args.duration) ? Number(args.duration) : Math.max(0, comp.duration - startTime);
+        var color = normalizeRgbColorInput(args.color || args.hexColor || args.backgroundColor, [0, 0, 0]);
+        var layerName = args.name || "Background";
+        var solidLayer = comp.layers.addSolid(color, layerName, comp.width, comp.height, comp.pixelAspect || 1);
+        var position = [comp.width / 2, comp.height / 2];
+
+        solidLayer.property("Position").setValue(position);
+        solidLayer.startTime = startTime;
+        if (duration > 0) {
+            solidLayer.outPoint = Math.min(comp.duration, startTime + duration);
+        }
+        if (args.moveToBack !== false) {
+            solidLayer.moveToEnd();
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Background solid created successfully",
+            composition: buildCompSummary(comp),
+            layer: {
+                name: solidLayer.name,
+                index: solidLayer.index,
+                type: "solid",
+                inPoint: solidLayer.inPoint,
+                outPoint: solidLayer.outPoint,
+                position: solidLayer.property("Position").value
+            },
+            defaultsApplied: {
+                fullFrame: true,
+                moveToBack: args.moveToBack !== false
+            }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function animateTextEntry(args) {
+    try {
+        args = args || {};
+        var comp = resolveComposition(args);
+        var layer = resolveSingleLayerInComp(comp, args);
+        if (!(layer instanceof TextLayer)) {
+            throw new Error("Target layer must be a text layer");
+        }
+
+        var direction = args.direction || "bottom";
+        var distance = hasValue(args.distance) ? Number(args.distance) : 120;
+        var duration = hasValue(args.duration) ? Number(args.duration) : 1;
+        var startTime = hasValue(args.startTime) ? Number(args.startTime) : layer.inPoint;
+        var fadeIn = args.fadeIn !== false;
+        var overshoot = args.overshoot !== false;
+        var opacityFrom = hasValue(args.opacityFrom) ? Number(args.opacityFrom) : 0;
+
+        var positionProp = layer.property("Position");
+        var opacityProp = layer.property("Opacity");
+        var finalPosition = positionProp.value;
+        var finalOpacity = opacityProp.value;
+        var startPosition = finalPosition instanceof Array ? finalPosition.slice(0) : [finalPosition];
+        var overshootPosition = finalPosition instanceof Array ? finalPosition.slice(0) : [finalPosition];
+
+        if (direction === "left") {
+            startPosition[0] -= distance;
+            overshootPosition[0] += distance * 0.1;
+        } else if (direction === "right") {
+            startPosition[0] += distance;
+            overshootPosition[0] -= distance * 0.1;
+        } else if (direction === "top") {
+            startPosition[1] -= distance;
+            overshootPosition[1] += distance * 0.1;
+        } else {
+            startPosition[1] += distance;
+            overshootPosition[1] -= distance * 0.1;
+        }
+
+        positionProp.setValueAtTime(startTime, startPosition);
+        if (overshoot) {
+            positionProp.setValueAtTime(startTime + duration * 0.82, overshootPosition);
+        }
+        positionProp.setValueAtTime(startTime + duration, finalPosition);
+
+        if (fadeIn) {
+            opacityProp.setValueAtTime(startTime, opacityFrom);
+            opacityProp.setValueAtTime(startTime + duration, finalOpacity);
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Text entry animation applied successfully",
+            composition: buildCompSummary(comp),
+            layer: buildLayerSummary(layer),
+            animation: {
+                direction: direction,
+                distance: distance,
+                duration: duration,
+                startTime: startTime,
+                fadeIn: fadeIn,
+                overshoot: overshoot,
+                startPosition: startPosition,
+                finalPosition: finalPosition
+            }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
 // --- setLayerProperties (modified to handle text properties) ---
 function setLayerProperties(args) {
     try {
@@ -1569,6 +2000,9 @@ function setLayerKeyframe(args) {
         var layer = resolveSingleLayerInComp(comp, args);
         var propertyName = args.propertyName;
         var timeInSeconds = args.timeInSeconds;
+        if (timeInSeconds === undefined || timeInSeconds === null || timeInSeconds === "") {
+            timeInSeconds = args.time;
+        }
         var value = args.value;
         var property = resolvePropertyOnLayer(layer, propertyName);
 
@@ -2974,6 +3408,8 @@ function createBridgeUI(thisObj) {
     bridgePanel.alignChildren = ["fill", "top"];
     bridgePanel.spacing = 10;
     bridgePanel.margins = 16;
+    bridgePanel.preferredSize = [620, 420];
+    bridgePanel.minimumSize = [520, 320];
 
     // Status display
     statusText = bridgePanel.add("statictext", undefined, "Waiting for commands...");
@@ -2983,8 +3419,9 @@ function createBridgeUI(thisObj) {
     var logPanel = bridgePanel.add("panel", undefined, "Command Log");
     logPanel.orientation = "column";
     logPanel.alignChildren = ["fill", "fill"];
+    logPanel.preferredSize.width = 580;
     logText = logPanel.add("edittext", undefined, "", {multiline: true, readonly: true});
-    logText.preferredSize.height = 200;
+    logText.preferredSize = [580, 260];
 
     if (isAE2025OrLater) {
         var warning = bridgePanel.add("statictext", undefined, "AE 2025+: Dockable panels are not supported. Floating window only.");
@@ -2995,6 +3432,10 @@ function createBridgeUI(thisObj) {
 
     autoRunCheckbox = bridgePanel.add("checkbox", undefined, "Auto-run commands");
     autoRunCheckbox.value = true;
+    autoRunCheckbox.onClick = function() {
+        setStatusText("Ready - Auto-run is " + (autoRunCheckbox.value ? "ON" : "OFF"));
+        logToPanel("Auto-run " + (autoRunCheckbox.value ? "enabled" : "disabled"));
+    };
 
     var checkButton = bridgePanel.add("button", undefined, "Check for Commands Now");
     checkButton.onClick = function() {
@@ -3014,8 +3455,66 @@ var panel = null;
 var statusText = null;
 var logText = null;
 var autoRunCheckbox = null;
+var maxPanelLogLines = 120;
+var panelLogLines = [];
+var currentCommandContext = {
+    command: null,
+    commandId: null
+};
+
+function appendBridgeLogEntry(phase, status, message, extra) {
+    try {
+        var file = new File(getBridgeLogFilePath());
+        file.encoding = "UTF-8";
+        var opened = file.exists ? file.open("e") : file.open("w");
+        if (!opened) {
+            return;
+        }
+        file.seek(0, 2);
+        var entry = {
+            timestamp: getIsoTimestamp(),
+            phase: phase,
+            status: status,
+            message: message,
+            command: currentCommandContext.command,
+            commandId: currentCommandContext.commandId
+        };
+        if (extra) {
+            entry.meta = extra;
+        }
+        file.write(JSON.stringify(entry) + "\n");
+        file.close();
+    } catch (e) {}
+}
+
+function setStatusText(message) {
+    if (statusText && statusText.text !== message) {
+        statusText.text = message;
+    }
+}
+
+function installNonBlockingDialogOverrides() {
+    var defaultConfirmValue = true;
+
+    alert = function(message) {
+        var text = message === undefined || message === null ? "" : String(message);
+        appendBridgeLogEntry("dialog", "info", "Suppressed native alert dialog.", { message: text });
+        logToPanel("Suppressed alert dialog: " + text);
+    };
+
+    confirm = function(message) {
+        var text = message === undefined || message === null ? "" : String(message);
+        appendBridgeLogEntry("dialog", "info", "Suppressed native confirm dialog.", {
+            message: text,
+            defaultValue: defaultConfirmValue
+        });
+        logToPanel("Suppressed confirm dialog: " + text + " -> returning " + defaultConfirmValue);
+        return defaultConfirmValue;
+    };
+}
 
 panel = createBridgeUI(this);
+installNonBlockingDialogOverrides();
 
 // Check interval (ms)
 var checkInterval = 2000;
@@ -3023,22 +3522,12 @@ var isChecking = false;
 
 // Command file path - use Documents folder for reliable access
 function getCommandFilePath() {
-    var userFolder = Folder.myDocuments;
-    var bridgeFolder = new Folder(userFolder.fsName + "/ae-mcp-bridge");
-    if (!bridgeFolder.exists) {
-        bridgeFolder.create();
-    }
-    return bridgeFolder.fsName + "/ae_command.json";
+    return getBridgeFolderPath() + "/ae_command.json";
 }
 
 // Result file path - use Documents folder for reliable access
 function getResultFilePath() {
-    var userFolder = Folder.myDocuments;
-    var bridgeFolder = new Folder(userFolder.fsName + "/ae-mcp-bridge");
-    if (!bridgeFolder.exists) {
-        bridgeFolder.create();
-    }
-    return bridgeFolder.fsName + "/ae_mcp_result.json";
+    return getBridgeFolderPath() + "/ae_mcp_result.json";
 }
 
 function getProjectItems(args) {
@@ -3241,6 +3730,863 @@ function getLayerDetails(args) {
     }
 }
 
+function getSelectedPropertiesForComp(comp) {
+    var activeComp = getActiveComp();
+    if (!activeComp || !comp || activeComp.id !== comp.id) {
+        return [];
+    }
+    return activeComp.selectedProperties || [];
+}
+
+function getPropertyPath(prop) {
+    if (!prop) {
+        return "";
+    }
+    var parts = [];
+    var current = prop;
+    var guard = 0;
+    while (current && guard < 64) {
+        try {
+            parts.push(current.name || current.matchName || "Property");
+        } catch (e) {
+            parts.push("Property");
+        }
+        try {
+            current = current.parentProperty;
+        } catch (parentError) {
+            current = null;
+        }
+        guard++;
+    }
+    parts.reverse();
+    return parts.join(" > ");
+}
+
+function getPropertyValueTypeLabel(prop) {
+    if (!prop) {
+        return null;
+    }
+    try {
+        return String(prop.propertyValueType);
+    } catch (e) {
+        return null;
+    }
+}
+
+function extractPathProperty(prop) {
+    if (!prop) {
+        return null;
+    }
+    try {
+        if (prop.matchName === "ADBE Vector Shape" || prop.matchName === "ADBE Mask Shape") {
+            return prop;
+        }
+    } catch (directError) {}
+
+    try {
+        var pathProp = prop.property("Path");
+        if (pathProp && pathProp.matchName === "ADBE Vector Shape") {
+            return pathProp;
+        }
+    } catch (pathError) {}
+
+    return null;
+}
+
+function buildPropertySummary(prop) {
+    if (!prop) {
+        return null;
+    }
+
+    var summary = {
+        name: null,
+        matchName: null,
+        path: getPropertyPath(prop),
+        canVaryOverTime: false,
+        canSetExpression: false,
+        numKeys: 0,
+        valueType: null,
+        isPath: false
+    };
+
+    try { summary.name = prop.name || null; } catch (nameError) {}
+    try { summary.matchName = prop.matchName || null; } catch (matchError) {}
+    try { summary.canVaryOverTime = prop.canVaryOverTime === true; } catch (varyError) {}
+    try { summary.canSetExpression = prop.canSetExpression === true; } catch (exprError) {}
+    try { summary.numKeys = prop.numKeys || 0; } catch (keyError) {}
+    summary.valueType = getPropertyValueTypeLabel(prop);
+    summary.isPath = extractPathProperty(prop) !== null;
+
+    var owner = getPropertyOwningLayer(prop);
+    if (owner) {
+        summary.layer = buildLayerSummary(owner);
+    }
+
+    return summary;
+}
+
+function buildSelectedPropertySummaries(comp) {
+    var selectedProps = getSelectedPropertiesForComp(comp);
+    var summaries = [];
+    var seen = {};
+
+    for (var i = 0; i < selectedProps.length; i++) {
+        var summary = buildPropertySummary(selectedProps[i]);
+        if (!summary) {
+            continue;
+        }
+        var key = summary.path || (summary.name + "::" + i);
+        if (!seen[key]) {
+            summaries.push(summary);
+            seen[key] = true;
+        }
+    }
+
+    return summaries;
+}
+
+function buildSelectedPathSummaries(comp) {
+    var selectedProps = getSelectedPropertiesForComp(comp);
+    var summaries = [];
+    var seen = {};
+
+    for (var i = 0; i < selectedProps.length; i++) {
+        var pathProp = extractPathProperty(selectedProps[i]);
+        if (!pathProp) {
+            continue;
+        }
+        var summary = buildPropertySummary(pathProp);
+        if (!summary) {
+            continue;
+        }
+        var key = summary.path || (summary.name + "::" + i);
+        if (!seen[key]) {
+            summaries.push(summary);
+            seen[key] = true;
+        }
+    }
+
+    return summaries;
+}
+
+function buildLayerContextSummary(layer) {
+    if (!layer) {
+        return null;
+    }
+
+    return {
+        index: layer.index,
+        name: layer.name,
+        type: getLayerType(layer),
+        selected: layer.selected === true,
+        enabled: layer.enabled,
+        locked: layer.locked,
+        shy: layer.shy,
+        solo: layer.solo,
+        parent: layer.parent ? buildLayerSummary(layer.parent) : null,
+        inPoint: layer.inPoint,
+        outPoint: layer.outPoint,
+        startTime: layer.startTime
+    };
+}
+
+function buildLayerMapForComp(comp, maxLayers) {
+    if (!comp) {
+        return null;
+    }
+
+    var limit = hasValue(maxLayers) ? parseInt(maxLayers, 10) : 25;
+    if (isNaN(limit) || limit < 1) {
+        limit = 25;
+    }
+
+    var layers = [];
+    var count = Math.min(comp.numLayers, limit);
+    for (var i = 1; i <= count; i++) {
+        layers.push(buildLayerContextSummary(comp.layer(i)));
+    }
+
+    return {
+        composition: buildCompSummary(comp),
+        totalLayers: comp.numLayers,
+        includedLayers: layers.length,
+        truncated: comp.numLayers > layers.length,
+        layers: layers
+    };
+}
+
+function buildNamedLayerBuckets(comp, maxNamedItems) {
+    var buckets = {
+        nulls: [],
+        textLayers: [],
+        controllers: [],
+        adjustmentLayers: [],
+        shapeLayers: []
+    };
+
+    if (!comp) {
+        return buckets;
+    }
+
+    var limit = hasValue(maxNamedItems) ? parseInt(maxNamedItems, 10) : 12;
+    if (isNaN(limit) || limit < 1) {
+        limit = 12;
+    }
+
+    function pushLimited(bucketName, layer) {
+        if (buckets[bucketName].length >= limit) {
+            return;
+        }
+        buckets[bucketName].push(buildLayerContextSummary(layer));
+    }
+
+    for (var i = 1; i <= comp.numLayers; i++) {
+        var layer = comp.layer(i);
+        var upperName = String(layer.name || "").toUpperCase();
+        var layerType = getLayerType(layer);
+
+        if (layer.nullLayer === true || layerType === "null") {
+            pushLimited("nulls", layer);
+        }
+        if (layerType === "text") {
+            pushLimited("textLayers", layer);
+        }
+        if (layer.adjustmentLayer === true || layerType === "adjustment") {
+            pushLimited("adjustmentLayers", layer);
+        }
+        if (layerType === "shape") {
+            pushLimited("shapeLayers", layer);
+        }
+        if (
+            upperName.indexOf("CTRL") !== -1 ||
+            upperName.indexOf("CONTROL") !== -1 ||
+            upperName.indexOf("CONTROLLER") !== -1
+        ) {
+            pushLimited("controllers", layer);
+        }
+    }
+
+    return buckets;
+}
+
+function listCompositionSummaries(limit) {
+    var summaries = [];
+    var maxCount = hasValue(limit) ? parseInt(limit, 10) : 100;
+    if (isNaN(maxCount) || maxCount < 1) {
+        maxCount = 100;
+    }
+
+    for (var i = 1; i <= app.project.numItems; i++) {
+        var item = app.project.item(i);
+        if (item instanceof CompItem) {
+            summaries.push(buildCompSummary(item));
+            if (summaries.length >= maxCount) {
+                break;
+            }
+        }
+    }
+
+    return summaries;
+}
+
+function classifyResolutionMessage(message) {
+    var text = String(message || "");
+    return {
+        message: text,
+        isAmbiguous: text.toLowerCase().indexOf("ambiguous") !== -1,
+        requiresDisambiguation: text.toLowerCase().indexOf("ambiguous") !== -1,
+        isMissingContext: text.toLowerCase().indexOf("no active composition") !== -1 ||
+            text.toLowerCase().indexOf("no selected") !== -1 ||
+            text.toLowerCase().indexOf("no target") !== -1
+    };
+}
+
+function resolveLayerCollectionForContext(comp, args) {
+    var resolved = [];
+    var seen = {};
+    var indexedLayers = resolveLayersByIndexes(comp, args.layerIndexes || []);
+    var namedLayers = [];
+
+    if (args.layerNames && args.layerNames.length) {
+        namedLayers = resolveMultipleLayersInComp(comp, { layerNames: args.layerNames });
+    } else if (args.useSelectedLayers === true) {
+        namedLayers = resolveMultipleLayersInComp(comp, { useSelectedLayers: true });
+    } else if (args.targetLayers && args.targetLayers.mode === "selected") {
+        namedLayers = resolveMultipleLayersInComp(comp, { targetLayers: { mode: "selected" } });
+    } else if (args.targetLayers && args.targetLayers.mode === "names") {
+        namedLayers = resolveMultipleLayersInComp(comp, { targetLayers: args.targetLayers });
+    }
+
+    for (var i = 0; i < indexedLayers.length; i++) {
+        if (!seen[indexedLayers[i].index]) {
+            resolved.push(indexedLayers[i]);
+            seen[indexedLayers[i].index] = true;
+        }
+    }
+
+    for (var j = 0; j < namedLayers.length; j++) {
+        if (!seen[namedLayers[j].index]) {
+            resolved.push(namedLayers[j]);
+            seen[namedLayers[j].index] = true;
+        }
+    }
+
+    return resolved;
+}
+
+function resolveTargetsCore(args) {
+    args = args || {};
+    var assumptions = [];
+    var ambiguities = [];
+    var warnings = [];
+    var resolvedTargets = {};
+    var needsUserDisambiguation = false;
+    var comp = null;
+
+    try {
+        comp = resolveComposition(args);
+        resolvedTargets.composition = buildCompSummary(comp);
+
+        if (!hasValue(args.compName) && !hasValue(args.compIndex) && !(args.targetComp && args.targetComp.mode)) {
+            assumptions.push("Used active composition as the target composition");
+        }
+    } catch (compError) {
+        var compIssue = classifyResolutionMessage(compError.toString());
+        ambiguities.push({
+            kind: "composition",
+            message: compIssue.message,
+            requiresDisambiguation: compIssue.requiresDisambiguation
+        });
+        needsUserDisambiguation = needsUserDisambiguation || compIssue.requiresDisambiguation;
+    }
+
+    if (comp) {
+        var wantsSingleLayer = hasValue(args.layerIndex) || hasValue(args.layerName) ||
+            args.useSelectedLayer === true || (args.targetLayer && args.targetLayer.mode) ||
+            (args.targetLayers && args.targetLayers.mode === "selected") ||
+            (args.targetLayers && args.targetLayers.mode === "names" && args.targetLayers.names && args.targetLayers.names.length === 1);
+
+        if (wantsSingleLayer) {
+            try {
+                resolvedTargets.layer = buildLayerSummary(resolveSingleLayerInComp(comp, args));
+            } catch (layerError) {
+                var layerIssue = classifyResolutionMessage(layerError.toString());
+                ambiguities.push({
+                    kind: "layer",
+                    message: layerIssue.message,
+                    requiresDisambiguation: layerIssue.requiresDisambiguation
+                });
+                needsUserDisambiguation = needsUserDisambiguation || layerIssue.requiresDisambiguation;
+            }
+        }
+
+        var wantsLayerCollection = (args.layerIndexes && args.layerIndexes.length) ||
+            (args.layerNames && args.layerNames.length) ||
+            args.useSelectedLayers === true ||
+            (args.targetLayers && args.targetLayers.mode);
+
+        if (wantsLayerCollection) {
+            try {
+                resolvedTargets.layers = buildLayerListSummary(resolveLayerCollectionForContext(comp, args));
+            } catch (layersError) {
+                var layersIssue = classifyResolutionMessage(layersError.toString());
+                ambiguities.push({
+                    kind: "layers",
+                    message: layersIssue.message,
+                    requiresDisambiguation: layersIssue.requiresDisambiguation
+                });
+                needsUserDisambiguation = needsUserDisambiguation || layersIssue.requiresDisambiguation;
+            }
+        }
+
+        var selectedProperties = buildSelectedPropertySummaries(comp);
+        if (selectedProperties.length) {
+            resolvedTargets.selectedProperties = selectedProperties;
+        }
+
+        var selectedPaths = buildSelectedPathSummaries(comp);
+        if (selectedPaths.length) {
+            resolvedTargets.selectedPaths = selectedPaths;
+        }
+    } else {
+        warnings.push("Skipping layer and property resolution because composition resolution failed");
+    }
+
+    return {
+        resolvedTargets: resolvedTargets,
+        assumptions: assumptions,
+        ambiguities: ambiguities,
+        warnings: warnings,
+        needsUserDisambiguation: needsUserDisambiguation
+    };
+}
+
+function resolveTargetsCommand(args) {
+    try {
+        var resolution = resolveTargetsCore(args);
+        return JSON.stringify({
+            status: "success",
+            message: resolution.needsUserDisambiguation ? "Target resolution needs disambiguation" : "Targets resolved successfully",
+            resolvedTargets: resolution.resolvedTargets,
+            assumptions: resolution.assumptions,
+            ambiguities: resolution.ambiguities,
+            warnings: resolution.warnings,
+            needsUserDisambiguation: resolution.needsUserDisambiguation
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function getContextPack(args) {
+    try {
+        args = args || {};
+        var activeComp = getActiveComp();
+        var activeCompSummary = buildCompSummary(activeComp);
+        var resolution = resolveTargetsCore(args);
+        var targetComp = resolution.resolvedTargets.composition ? resolveComposition(args) : activeComp;
+        var includeLayerMap = args.includeLayerMap !== false;
+        var includeNamedItems = args.includeNamedItems !== false;
+        var layerMap = includeLayerMap && targetComp ? buildLayerMapForComp(targetComp, args.maxLayers) : null;
+        var namedItems = includeNamedItems && targetComp ? buildNamedLayerBuckets(targetComp, args.maxNamedItems) : null;
+
+        return JSON.stringify({
+            status: "success",
+            message: "Context pack generated successfully",
+            contextId: "ctx-" + new Date().getTime(),
+            activeComp: activeCompSummary,
+            compositionSummaries: listCompositionSummaries(args.maxComps),
+            selectedLayers: activeComp ? buildLayerListSummary(getSelectedLayersForComp(activeComp)) : [],
+            selectedProperties: activeComp ? buildSelectedPropertySummaries(activeComp) : [],
+            selectedPaths: activeComp ? buildSelectedPathSummaries(activeComp) : [],
+            resolvedTargets: resolution.resolvedTargets,
+            assumptions: resolution.assumptions,
+            ambiguities: resolution.ambiguities,
+            warnings: resolution.warnings,
+            needsUserDisambiguation: resolution.needsUserDisambiguation,
+            layerMap: layerMap,
+            namedItems: namedItems
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+function getCapabilityCatalogFolder() {
+    var userFolder = Folder.myDocuments;
+    var bridgeFolder = new Folder(userFolder.fsName + "/ae-mcp-bridge");
+    if (!bridgeFolder.exists) {
+        bridgeFolder.create();
+    }
+    var catalogFolder = new Folder(bridgeFolder.fsName + "/catalogs");
+    if (!catalogFolder.exists) {
+        catalogFolder.create();
+    }
+    return catalogFolder;
+}
+
+function getCapabilityCatalogFile(versionLabel, aeVersion) {
+    var safeAeVersion = String(aeVersion || "unknown").replace(/[^\w.-]+/g, "_");
+    return new File(getCapabilityCatalogFolder().fsName + "/ae-capability-catalog-v" + versionLabel + "-" + safeAeVersion + ".json");
+}
+
+function readJsonFileSafe(file) {
+    if (!file || !file.exists) {
+        return null;
+    }
+    try {
+        if (!file.open("r")) {
+            return null;
+        }
+        var content = file.read();
+        file.close();
+        if (!content) {
+            return null;
+        }
+        return JSON.parse(content);
+    } catch (e) {
+        try { file.close(); } catch (closeError) {}
+        return null;
+    }
+}
+
+function writeJsonFileSafe(file, value) {
+    if (!file) {
+        throw new Error("Capability catalog file is required");
+    }
+    var json = JSON.stringify(value, null, 2);
+    if (!file.open("w")) {
+        throw new Error("Failed to open capability catalog file for writing");
+    }
+    file.write(json);
+    file.close();
+}
+
+function createCatalogNode(kind, name, matchName, path) {
+    return {
+        kind: kind,
+        name: name || null,
+        matchName: matchName || null,
+        path: path || "",
+        children: []
+    };
+}
+
+function safePropertyValueType(prop) {
+    try {
+        return String(prop.propertyValueType);
+    } catch (e) {
+        return null;
+    }
+}
+
+function walkPropertyTree(prop, pathPrefix, depth, maxDepth, maxChildren, compatibilityWarnings) {
+    if (!prop) {
+        return null;
+    }
+
+    var name = null;
+    var matchName = null;
+    var path = "";
+    try { name = prop.name || null; } catch (nameError) {}
+    try { matchName = prop.matchName || null; } catch (matchError) {}
+    path = pathPrefix ? (pathPrefix + " > " + (name || matchName || "Property")) : (name || matchName || "Property");
+
+    var childCount = 0;
+    try {
+        childCount = prop.numProperties || 0;
+    } catch (childCountError) {
+        childCount = 0;
+    }
+
+    var node = createCatalogNode(childCount > 0 ? "group" : "property", name, matchName, path);
+    node.depth = depth;
+    node.propertyValueType = safePropertyValueType(prop);
+
+    try { node.canVaryOverTime = prop.canVaryOverTime === true; } catch (varyError) {}
+    try { node.canSetExpression = prop.canSetExpression === true; } catch (exprError) {}
+    try { node.propertyType = String(prop.propertyType); } catch (propTypeError) {}
+
+    if (depth >= maxDepth) {
+        if (childCount > 0) {
+            node.truncated = true;
+            compatibilityWarnings.push("Property traversal reached max depth at: " + path);
+        }
+        return node;
+    }
+
+    if (childCount > maxChildren) {
+        node.truncated = true;
+        node.childCount = childCount;
+        compatibilityWarnings.push("Property traversal exceeded max child count at: " + path);
+        childCount = maxChildren;
+    }
+
+    for (var i = 1; i <= childCount; i++) {
+        var child = null;
+        try {
+            child = prop.property(i);
+        } catch (childError) {
+            child = null;
+        }
+        if (!child) {
+            continue;
+        }
+        var childNode = walkPropertyTree(child, path, depth + 1, maxDepth, maxChildren, compatibilityWarnings);
+        if (childNode) {
+            node.children.push(childNode);
+        }
+    }
+
+    return node;
+}
+
+function collectTopLevelPropertyGroups(layer) {
+    var groups = [];
+    if (!layer) {
+        return groups;
+    }
+    var count = 0;
+    try {
+        count = layer.numProperties || 0;
+    } catch (e) {
+        count = 0;
+    }
+    for (var i = 1; i <= count; i++) {
+        try {
+            var prop = layer.property(i);
+            groups.push({
+                name: prop.name || null,
+                matchName: prop.matchName || null,
+                propertyType: String(prop.propertyType)
+            });
+        } catch (propError) {}
+    }
+    return groups;
+}
+
+function createCapabilityDiscoveryComp() {
+    return app.project.items.addComp("__ae_mcp_capability_catalog__", 1920, 1080, 1, 5, 30);
+}
+
+function createDiscoveryLayers(comp, compatibilityWarnings) {
+    var layers = [];
+
+    function addLayer(label, fn) {
+        try {
+            var layer = fn();
+            if (layer) {
+                layers.push({
+                    kind: label,
+                    layer: layer
+                });
+            }
+        } catch (e) {
+            compatibilityWarnings.push("Layer discovery failed for " + label + ": " + e.toString());
+        }
+    }
+
+    addLayer("solid", function() {
+        return comp.layers.addSolid([1, 1, 1], "__ae_mcp_solid__", comp.width, comp.height, 1);
+    });
+
+    addLayer("text", function() {
+        var textLayer = comp.layers.addText("AE MCP");
+        return textLayer;
+    });
+
+    addLayer("shape", function() {
+        var shapeLayer = comp.layers.addShape();
+        var root = shapeLayer.property("ADBE Root Vectors Group");
+        if (root) {
+            root.addProperty("ADBE Vector Group");
+        }
+        return shapeLayer;
+    });
+
+    addLayer("null", function() {
+        return comp.layers.addNull();
+    });
+
+    addLayer("camera", function() {
+        return comp.layers.addCamera("__ae_mcp_camera__", [comp.width / 2, comp.height / 2]);
+    });
+
+    addLayer("light", function() {
+        return comp.layers.addLight("__ae_mcp_light__", [comp.width / 2, comp.height / 2]);
+    });
+
+    addLayer("adjustment", function() {
+        var adjustment = comp.layers.addSolid([0, 0, 0], "__ae_mcp_adjustment__", comp.width, comp.height, 1);
+        adjustment.adjustmentLayer = true;
+        return adjustment;
+    });
+
+    return layers;
+}
+
+function buildLayerTypeCatalog(layerKind, layer, args, compatibilityWarnings) {
+    var maxDepth = hasValue(args.maxDepth) ? parseInt(args.maxDepth, 10) : 6;
+    var maxChildren = hasValue(args.maxChildren) ? parseInt(args.maxChildren, 10) : 80;
+    if (isNaN(maxDepth) || maxDepth < 1) {
+        maxDepth = 6;
+    }
+    if (isNaN(maxChildren) || maxChildren < 1) {
+        maxChildren = 80;
+    }
+
+    return {
+        kind: layerKind,
+        topLevelGroups: collectTopLevelPropertyGroups(layer),
+        propertyTree: walkPropertyTree(layer, "", 0, maxDepth, maxChildren, compatibilityWarnings)
+    };
+}
+
+function buildEffectCatalog(args, compatibilityWarnings) {
+    var effects = [];
+    var appEffects = null;
+
+    try {
+        appEffects = app.effects;
+    } catch (effectsError) {
+        compatibilityWarnings.push("app.effects is not available: " + effectsError.toString());
+        return effects;
+    }
+
+    if (!appEffects || typeof appEffects.length !== "number") {
+        compatibilityWarnings.push("app.effects is unavailable or not array-like in this AE host");
+        return effects;
+    }
+
+    var maxEffects = hasValue(args.maxEffects) ? parseInt(args.maxEffects, 10) : 250;
+    if (isNaN(maxEffects) || maxEffects < 1) {
+        maxEffects = 250;
+    }
+
+    var count = Math.min(appEffects.length, maxEffects);
+    for (var i = 0; i < count; i++) {
+        try {
+            var effect = appEffects[i];
+            if (!effect) {
+                continue;
+            }
+            effects.push({
+                name: effect.displayName || effect.name || null,
+                matchName: effect.matchName || null,
+                category: effect.category || null
+            });
+        } catch (effectItemError) {
+            compatibilityWarnings.push("Effect enumeration item failed at index " + i + ": " + effectItemError.toString());
+        }
+    }
+
+    if (appEffects.length > maxEffects) {
+        compatibilityWarnings.push("Effect catalog truncated at " + maxEffects + " items");
+    }
+
+    return effects;
+}
+
+function buildFontSources(compatibilityWarnings) {
+    var result = {
+        source: "none",
+        fonts: []
+    };
+
+    if ($.os.toLowerCase().indexOf("windows") === -1) {
+        compatibilityWarnings.push("OS font fallback currently only implemented for Windows hosts");
+        return result;
+    }
+
+    var command = 'powershell -NoProfile -ExecutionPolicy Bypass -Command "[System.Reflection.Assembly]::LoadWithPartialName(' +
+        "''System.Drawing'')" +
+        ' | Out-Null; (New-Object System.Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name }"';
+
+    try {
+        var output = system.callSystem(command);
+        if (!output) {
+            compatibilityWarnings.push("Windows font enumeration returned no output");
+            return result;
+        }
+        var lines = output.split(/\r?\n/);
+        var seen = {};
+        for (var i = 0; i < lines.length; i++) {
+            var name = lines[i];
+            if (!name) {
+                continue;
+            }
+            name = String(name).replace(/^\s+|\s+$/g, "");
+            if (!name || seen[name]) {
+                continue;
+            }
+            seen[name] = true;
+            result.fonts.push({ familyName: name });
+        }
+        result.source = "windows-system-callsystem";
+    } catch (fontError) {
+        compatibilityWarnings.push("Windows font enumeration failed: " + fontError.toString());
+    }
+
+    return result;
+}
+
+function buildCapabilityCatalog(args) {
+    var compatibilityWarnings = [];
+    var layerTypes = [];
+    var effectCatalog = [];
+    var fontSources = { source: "none", fonts: [] };
+    var propertyGroups = [];
+    var versionLabel = "1";
+    var discoveryComp = null;
+    var generatedAt = getIsoTimestamp();
+    var aeVersion = app.version || "unknown";
+
+    try {
+        app.beginUndoGroup("AE MCP Capability Catalog");
+        discoveryComp = createCapabilityDiscoveryComp();
+        var discoveredLayers = createDiscoveryLayers(discoveryComp, compatibilityWarnings);
+
+        for (var i = 0; i < discoveredLayers.length; i++) {
+            var entry = buildLayerTypeCatalog(discoveredLayers[i].kind, discoveredLayers[i].layer, args, compatibilityWarnings);
+            layerTypes.push(entry);
+
+            for (var g = 0; g < entry.topLevelGroups.length; g++) {
+                var group = entry.topLevelGroups[g];
+                var exists = false;
+                for (var pg = 0; pg < propertyGroups.length; pg++) {
+                    if (propertyGroups[pg].matchName === group.matchName && propertyGroups[pg].name === group.name) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) {
+                    propertyGroups.push(group);
+                }
+            }
+        }
+
+        effectCatalog = buildEffectCatalog(args, compatibilityWarnings);
+        fontSources = buildFontSources(compatibilityWarnings);
+    } finally {
+        try {
+            if (discoveryComp) {
+                discoveryComp.remove();
+            }
+        } catch (cleanupError) {
+            compatibilityWarnings.push("Discovery comp cleanup failed: " + cleanupError.toString());
+        }
+        try {
+            app.endUndoGroup();
+        } catch (undoError) {}
+    }
+
+    return {
+        catalogVersion: versionLabel,
+        aeVersion: aeVersion,
+        generatedAt: generatedAt,
+        generationMode: "on-demand",
+        layerTypes: layerTypes,
+        propertyGroups: propertyGroups,
+        effectCatalog: effectCatalog,
+        fontSources: fontSources,
+        compatibilityWarnings: compatibilityWarnings
+    };
+}
+
+function getCapabilityCatalog(args) {
+    try {
+        args = args || {};
+        var versionLabel = "1";
+        var aeVersion = app.version || "unknown";
+        var cacheFile = getCapabilityCatalogFile(versionLabel, aeVersion);
+        var forceRefresh = args.forceRefresh === true;
+        var cachedCatalog = forceRefresh ? null : readJsonFileSafe(cacheFile);
+
+        if (cachedCatalog && cachedCatalog.catalogVersion === versionLabel && cachedCatalog.aeVersion === aeVersion) {
+            return JSON.stringify({
+                status: "success",
+                message: "Capability catalog loaded from cache",
+                cached: true,
+                cachePath: cacheFile.fsName,
+                catalog: cachedCatalog
+            }, null, 2);
+        }
+
+        var catalog = buildCapabilityCatalog(args);
+        writeJsonFileSafe(cacheFile, catalog);
+
+        return JSON.stringify({
+            status: "success",
+            message: "Capability catalog generated successfully",
+            cached: false,
+            cachePath: cacheFile.fsName,
+            catalog: catalog
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
 // --- setCompositionProperties: set duration, frameRate, etc. on active or named comp ---
 function setCompositionProperties(args) {
     try {
@@ -3267,6 +4613,8 @@ function getProjectInfo() {
     var result = {
         projectName: project.file ? project.file.name : "Untitled Project",
         path: project.file ? project.file.fsName : "",
+        isSaved: !!project.file,
+        revision: project.revision,
         numItems: project.numItems,
         bitsPerChannel: project.bitsPerChannel,
         timeMode: project.timeDisplayType === TimeDisplayType.FRAMES ? "Frames" : "Timecode",
@@ -3392,10 +4740,14 @@ function getLayerInfo() {
 // Execute command
 function executeCommand(command, args, commandData) {
     var result = "";
+    currentCommandContext.command = command;
+    currentCommandContext.commandId = commandData && commandData.commandId ? commandData.commandId : (args && args.commandId ? args.commandId : null);
 
     logToPanel("Executing command: " + command);
-    statusText.text = "Running: " + command;
-    refreshPanelUI();
+    appendBridgeLogEntry("execute", "info", "Executing bridge command.", {
+        args: args || {}
+    });
+    setStatusText("Running: " + command);
 
     try {
         logToPanel("Attempting to execute: " + command); // Log before switch
@@ -3418,6 +4770,24 @@ function executeCommand(command, args, commandData) {
                 break;
             case "getLayerDetails":
                 result = getLayerDetails(args);
+                break;
+            case "getContextPack":
+                result = getContextPack(args);
+                break;
+            case "resolveTargets":
+                result = resolveTargetsCommand(args);
+                break;
+            case "getCapabilityCatalog":
+                result = getCapabilityCatalog(args);
+                break;
+            case "preflightMutation":
+                result = preflightMutation(args);
+                break;
+            case "prepareProjectCheckpoint":
+                result = prepareProjectCheckpoint(args);
+                break;
+            case "restoreCheckpoint":
+                result = restoreCheckpoint(args);
                 break;
             case "getProjectInfo":
                 result = getProjectInfo();
@@ -3447,6 +4817,16 @@ function executeCommand(command, args, commandData) {
                 logToPanel("Calling createSolidLayer function...");
                 result = createSolidLayer(args);
                 logToPanel("Returned from createSolidLayer.");
+                break;
+            case "createBackgroundSolid":
+                logToPanel("Calling createBackgroundSolid function...");
+                result = createBackgroundSolid(args);
+                logToPanel("Returned from createBackgroundSolid.");
+                break;
+            case "animateTextEntry":
+                logToPanel("Calling animateTextEntry function...");
+                result = animateTextEntry(args);
+                logToPanel("Returned from animateTextEntry.");
                 break;
             case "setLayerProperties":
                 logToPanel("Calling setLayerProperties function...");
@@ -3589,9 +4969,12 @@ function executeCommand(command, args, commandData) {
              // Continue, but log the error
         }
         logToPanel("Result file write process complete.");
+        appendBridgeLogEntry("result", "success", "Bridge command completed successfully.", {
+            command: command
+        });
         
         logToPanel("Command completed successfully: " + command); // Changed log message
-        statusText.text = "Command completed: " + command;
+        setStatusText("Command completed: " + command);
         
         // Update command file status
         logToPanel("Updating command status to completed...");
@@ -3601,7 +4984,11 @@ function executeCommand(command, args, commandData) {
     } catch (error) {
         var errorMsg = "ERROR in executeCommand for '" + command + "': " + error.toString() + (error.line ? " (line: " + error.line + ")" : "");
         logToPanel(errorMsg); // Log detailed error
-        statusText.text = "Error: " + error.toString();
+        appendBridgeLogEntry("result", "error", errorMsg, {
+            line: error.line,
+            fileName: error.fileName
+        });
+        setStatusText("Error: " + error.toString());
         
         // Write detailed error to result file
         try {
@@ -3629,37 +5016,58 @@ function executeCommand(command, args, commandData) {
         logToPanel("Updating command status to error...");
         updateCommandStatus("error");
         logToPanel("Command status updated to error.");
+    } finally {
+        currentCommandContext.command = null;
+        currentCommandContext.commandId = null;
     }
 }
 
 // Update command file status
 function updateCommandStatus(status) {
     try {
-        var commandFile = new File(getCommandFilePath());
+        var commandFilePath = getCommandFilePath();
+        var commandFile = new File(commandFilePath);
         if (commandFile.exists) {
-            commandFile.open("r");
+            if (!commandFile.open("r")) {
+                return false;
+            }
             var content = commandFile.read();
             commandFile.close();
             
             if (content) {
                 var commandData = JSON.parse(content);
+                if (commandData.status === status) {
+                    return false;
+                }
                 commandData.status = status;
                 
-                commandFile.open("w");
-                commandFile.write(JSON.stringify(commandData, null, 2));
-                commandFile.close();
+                var writeFile = new File(commandFilePath);
+                writeFile.encoding = "UTF-8";
+                if (!writeFile.open("w")) {
+                    throw new Error("Failed to open command file for writing.");
+                }
+                writeFile.write(JSON.stringify(commandData, null, 2));
+                writeFile.close();
+                return true;
             }
         }
     } catch (e) {
         logToPanel("Error updating command status: " + e.toString());
     }
+    return false;
 }
 
 // Log message to panel
 function logToPanel(message) {
     var timestamp = new Date().toLocaleTimeString();
-    logText.text = timestamp + ": " + message + "\n" + logText.text;
-    refreshPanelUI();
+    panelLogLines.unshift(timestamp + ": " + message);
+    if (panelLogLines.length > maxPanelLogLines) {
+        panelLogLines.length = maxPanelLogLines;
+    }
+    if (logText) {
+        logText.text = panelLogLines.join("\n");
+    }
+    appendBridgeLogEntry("panel-log", "info", message, null);
 }
 
 function refreshPanelUI() {
@@ -3716,7 +5124,7 @@ logToPanel("MCP Bridge Auto started");
 logToPanel("After Effects version: " + app.version);
 logToPanel("UI mode: " + ((panel instanceof Panel) ? "dockable panel" : "floating palette"));
 logToPanel("Command file: " + getCommandFilePath());
-statusText.text = "Ready - Auto-run is " + (autoRunCheckbox.value ? "ON" : "OFF");
+setStatusText("Ready - Auto-run is " + (autoRunCheckbox.value ? "ON" : "OFF"));
 
 // Start the command checker
 startCommandChecker();
