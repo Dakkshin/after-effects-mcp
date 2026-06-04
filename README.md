@@ -55,8 +55,20 @@
 
 ### 🌀 Animation Capabilities
 - **Set keyframes** for layer properties (Position, Scale, Rotation, Opacity, etc.)
+- **Apply easing** (easy ease / ease in / ease out) to existing keyframes
 - **Apply expressions** to layer properties for dynamic animations
 - **Batch set properties** across multiple layers at once
+- **Trim Paths** on shape layers, including animated "draw-on"
+- **Text animators** with range selectors for per-character animation
+
+### ✨ Effects, Rendering & Project
+- **Apply, remove, and reorder effects** on a layer
+- **Create lights** (parallel, spot, point, ambient) and **reorder layers** in the stack
+- **Set or clear a layer's parent** for rigging
+- **Import footage** (image / video / audio) and optionally add it to a comp
+- **Precompose** layers into a nested composition
+- **Render to a video file** via the render queue, or **capture a single frame to PNG** (so the result can be inspected)
+- **Inspect layer details** (effects, blend mode, parent, 3D, timing) and **save the project**
 
 ## ⚙️ Setup Instructions
 
@@ -215,6 +227,27 @@ You can animate layers with:
 | `duplicateLayer`            | Duplicate a layer                     |
 | `deleteLayer`               | Delete a layer                        |
 | `setLayerMask`              | Create/modify layer masks             |
+| `move-layer`                | Reorder a layer (front/back/before/after/to-index) |
+| `set-parent`                | Set or clear a layer's parent          |
+| `create-null`               | Create a null object layer             |
+| `set-3d-layer`              | Toggle a layer's 3D switch             |
+| `set-blend-mode`            | Set a layer's blending mode            |
+| `set-track-matte`           | Set/clear a track matte (optionally to a specific layer) |
+| `remove-effect`             | Remove an effect from a layer          |
+| `reorder-effect`            | Reorder an effect in the effect stack  |
+| `create-light`              | Create a light layer                   |
+| `apply-trim-paths`          | Add Trim Paths to a shape (with draw-on) |
+| `add-text-animator`         | Add a text animator (per-character)    |
+| `set-keyframe-ease`         | Apply easing to a property's keyframes |
+| `import-footage`            | Import a file into the project         |
+| `precompose`                | Precompose layers into a nested comp   |
+| `render-video`              | Render a composition to a video file   |
+| `save-frame`                | Render a single frame to a PNG file    |
+| `save-project`              | Save the current project               |
+| `get-layer-details`         | Inspect a layer (effects, blend, parent, 3D) |
+| `delete-composition`        | Delete a composition from the project  |
+
+> ℹ️ Output format for `render-video` is determined by the chosen output module template (or the default one); on some installs the default is H.264 (.mp4). `save-frame` is handy for letting an AI assistant inspect the rendered result.
 
 ## 👨‍💻 For Developers
 

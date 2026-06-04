@@ -450,6 +450,618 @@ function createSolidLayer(args) {
     }
 }
 
+// --- saveFrame: render a single composition frame to a PNG file ---
+function saveFrame(args) {
+    try {
+        var compName = args.compName || "";
+        var time = (args.time !== undefined && args.time !== null) ? args.time : 0;
+        var outPath = args.outPath;
+        if (!outPath) { throw new Error("outPath is required"); }
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        var outFile = new File(outPath);
+        var parent = outFile.parent;
+        if (parent && !parent.exists) { parent.create(); }
+
+        // saveFrameToPng renders the comp at the given time (seconds) to a PNG file
+        comp.saveFrameToPng(time, outFile);
+        // Re-stat with a FRESH File object: ExtendScript caches File.exists on the
+        // original object, which was created before the file existed.
+        var writtenFile = new File(outFile.fsName);
+        if (!writtenFile.exists) {
+            throw new Error("saveFrameToPng reported no error but the output file was not created: " + outFile.fsName);
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Frame saved successfully",
+            path: outFile.fsName,
+            comp: comp.name,
+            time: time
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- moveLayer: reorder a layer within its composition ---
+function moveLayer(args) {
+    try {
+        var compName = args.compName || "";
+        var layerIndex = args.layerIndex;
+        var layerName = args.layerName || "";
+        var position = args.position; // "front" | "back" | "before" | "after"
+        var toIndex = args.toIndex;   // optional 1-based target index
+        var referenceLayerIndex = args.referenceLayerIndex;
+        var referenceLayerName = args.referenceLayerName || "";
+
+        var comp = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+        }
+        if (!comp) {
+            if (app.project.activeItem instanceof CompItem) { comp = app.project.activeItem; }
+            else { throw new Error("No composition found with name '" + compName + "' and no active composition"); }
+        }
+
+        // Resolve the layer to move
+        var layer = null;
+        if (layerIndex !== undefined && layerIndex !== null) {
+            if (layerIndex > 0 && layerIndex <= comp.numLayers) { layer = comp.layer(layerIndex); }
+            else { throw new Error("Layer index out of bounds: " + layerIndex); }
+        } else if (layerName) {
+            for (var j = 1; j <= comp.numLayers; j++) {
+                if (comp.layer(j).name === layerName) { layer = comp.layer(j); break; }
+            }
+        }
+        if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
+
+        if (toIndex !== undefined && toIndex !== null) {
+            toIndex = Math.max(1, Math.min(comp.numLayers, toIndex));
+            if (toIndex < layer.index) { layer.moveBefore(comp.layer(toIndex)); }
+            else if (toIndex > layer.index) { layer.moveAfter(comp.layer(toIndex)); }
+            // equal => no change
+        } else if (position === "front") {
+            layer.moveToBeginning();
+        } else if (position === "back") {
+            layer.moveToEnd();
+        } else if (position === "before" || position === "after") {
+            var ref = null;
+            if (referenceLayerIndex !== undefined && referenceLayerIndex !== null) {
+                if (referenceLayerIndex > 0 && referenceLayerIndex <= comp.numLayers) { ref = comp.layer(referenceLayerIndex); }
+            } else if (referenceLayerName) {
+                for (var k = 1; k <= comp.numLayers; k++) {
+                    if (comp.layer(k).name === referenceLayerName) { ref = comp.layer(k); break; }
+                }
+            }
+            if (!ref) { throw new Error("Reference layer not found for '" + position + "'"); }
+            if (position === "before") { layer.moveBefore(ref); } else { layer.moveAfter(ref); }
+        } else {
+            throw new Error("Specify either 'toIndex' or 'position' ('front'|'back'|'before'|'after')");
+        }
+
+        return JSON.stringify({
+            status: "success",
+            message: "Layer moved successfully",
+            layer: { name: layer.name, newIndex: layer.index }
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// =====================================================================
+// ===== Extended general-purpose commands (added 2026-06-04) ==========
+// =====================================================================
+
+// Shared helpers for the extended commands.
+// If a (non-empty) compName is supplied, it MUST match by name — we do NOT
+// silently fall back to the active comp, to avoid acting on the wrong comp.
+// Only when compName is omitted/empty do we use the active composition.
+function mcpFindComp(compName) {
+    if (compName) {
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var it = app.project.item(i);
+            if (it instanceof CompItem && it.name === compName) { return it; }
+        }
+        return null; // named comp requested but not found — caller will throw
+    }
+    if (app.project.activeItem instanceof CompItem) { return app.project.activeItem; }
+    return null;
+}
+
+function mcpFindLayer(comp, layerIndex, layerName) {
+    if (layerIndex !== undefined && layerIndex !== null) {
+        if (layerIndex > 0 && layerIndex <= comp.numLayers) { return comp.layer(layerIndex); }
+        return null;
+    }
+    if (layerName) {
+        for (var j = 1; j <= comp.numLayers; j++) {
+            if (comp.layer(j).name === layerName) { return comp.layer(j); }
+        }
+    }
+    return null;
+}
+
+// --- importFootage: import a file into the project, optionally add to a comp ---
+function importFootage(args) {
+    try {
+        var filePath = args.filePath;
+        if (!filePath) { throw new Error("filePath is required"); }
+        var f = new File(filePath);
+        if (!f.exists) { throw new Error("File not found: " + filePath); }
+
+        var io = new ImportOptions(f);
+        if (args.importAs === "comp" && io.canImportAs(ImportAsType.COMP)) { io.importAs = ImportAsType.COMP; }
+        var item = app.project.importFile(io);
+
+        var result = { status: "success", message: "Footage imported", name: item.name, id: item.id, typeName: item.typeName };
+        if (args.addToComp) {
+            var comp = mcpFindComp(args.compName || "");
+            if (!comp) { throw new Error("addToComp requested but composition not found"); }
+            var layer = comp.layers.add(item);
+            if (args.position) { layer.property("Position").setValue(args.position); }
+            if (args.startTime !== undefined && args.startTime !== null) { layer.startTime = args.startTime; }
+            result.layerIndex = layer.index;
+            result.layerName = layer.name;
+        }
+        return JSON.stringify(result, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- precompose: nest the given layers into a new composition ---
+function precompose(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var indices = args.layerIndices;
+        if (!indices || !indices.length) { throw new Error("layerIndices (array of 1-based indices) is required"); }
+        var name = args.name || "Precomp";
+        var moveAll = (args.moveAllAttributes !== undefined) ? args.moveAllAttributes : true;
+        // AE only allows moveAllAttributes=false when precomposing a SINGLE layer.
+        if (!moveAll && indices.length > 1) {
+            throw new Error("moveAllAttributes=false is only allowed when precomposing a single layer");
+        }
+        var newComp = comp.layers.precompose(indices, name, moveAll);
+        return JSON.stringify({ status: "success", message: "Precomposed", comp: newComp.name, id: newComp.id }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- setLayerParent: set or clear a layer's parent ---
+function setLayerParent(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var layer = mcpFindLayer(comp, args.layerIndex, args.layerName);
+        if (!layer) { throw new Error("Layer not found"); }
+        if (args.unparent) {
+            layer.parent = null;
+        } else {
+            var p = mcpFindLayer(comp, args.parentIndex, args.parentName);
+            if (!p) { throw new Error("Parent layer not found"); }
+            layer.parent = p;
+        }
+        return JSON.stringify({ status: "success", message: "Parent updated", layer: layer.name, parent: layer.parent ? layer.parent.name : null }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- createNull: add a null object layer ---
+function createNull(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var dur = (args.duration !== undefined && args.duration !== null) ? args.duration : comp.duration;
+        var nullLayer = comp.layers.addNull(dur);
+        if (args.name) { nullLayer.name = args.name; }
+        if (args.position) { nullLayer.property("Position").setValue(args.position); }
+        return JSON.stringify({ status: "success", message: "Null created", name: nullLayer.name, index: nullLayer.index }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- setBlendMode: set a layer's blending mode ---
+function setBlendMode(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var layer = mcpFindLayer(comp, args.layerIndex, args.layerName);
+        if (!layer) { throw new Error("Layer not found"); }
+        var modes = {
+            "normal": BlendingMode.NORMAL, "add": BlendingMode.ADD, "screen": BlendingMode.SCREEN,
+            "multiply": BlendingMode.MULTIPLY, "overlay": BlendingMode.OVERLAY, "lighten": BlendingMode.LIGHTEN,
+            "darken": BlendingMode.DARKEN, "softLight": BlendingMode.SOFT_LIGHT, "hardLight": BlendingMode.HARD_LIGHT,
+            "difference": BlendingMode.DIFFERENCE, "colorDodge": BlendingMode.CLASSIC_COLOR_DODGE,
+            "colorBurn": BlendingMode.CLASSIC_COLOR_BURN, "linearDodge": BlendingMode.LINEAR_DODGE,
+            "linearBurn": BlendingMode.LINEAR_BURN, "hue": BlendingMode.HUE, "saturation": BlendingMode.SATURATION,
+            "color": BlendingMode.COLOR, "luminosity": BlendingMode.LUMINOSITY
+        };
+        var m = modes[args.mode];
+        if (m === undefined) { throw new Error("Unknown blend mode: " + args.mode); }
+        layer.blendingMode = m;
+        return JSON.stringify({ status: "success", message: "Blend mode set", layer: layer.name, mode: args.mode }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- setTrackMatte: set a track matte for a layer ---
+function setTrackMatte(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var layer = mcpFindLayer(comp, args.layerIndex, args.layerName);
+        if (!layer) { throw new Error("Layer not found"); }
+        var types = {
+            "none": TrackMatteType.NO_TRACK_MATTE, "alpha": TrackMatteType.ALPHA,
+            "alphaInverted": TrackMatteType.ALPHA_INVERTED, "luma": TrackMatteType.LUMA,
+            "lumaInverted": TrackMatteType.LUMA_INVERTED
+        };
+        var t = types[args.matteType];
+        if (t === undefined) { throw new Error("Unknown matteType: " + args.matteType); }
+        // If the caller explicitly named a matte layer, it MUST resolve — do not
+        // silently fall back to the "layer directly above" legacy behavior.
+        var matteRequested = (args.matteLayerIndex !== undefined && args.matteLayerIndex !== null) ||
+                             (args.matteLayerName !== undefined && args.matteLayerName !== null && args.matteLayerName !== "");
+        var matteLayer = mcpFindLayer(comp, args.matteLayerIndex, args.matteLayerName);
+        if (matteRequested && !matteLayer) {
+            throw new Error("Requested matte layer not found");
+        }
+        var usedLegacyApi = false;
+        if (matteLayer && layer.setTrackMatte) {
+            layer.setTrackMatte(matteLayer, t); // AE 23.0+ explicit matte-layer link
+        } else {
+            // Legacy model: matte is the layer directly above `layer`.
+            layer.trackMatteType = t;
+            usedLegacyApi = true;
+        }
+        return JSON.stringify({ status: "success", message: "Track matte set", layer: layer.name, matteType: args.matteType, usedLegacyApi: usedLegacyApi }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- removeEffect: remove an effect from a layer ---
+function removeEffect(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var layer = mcpFindLayer(comp, args.layerIndex, args.layerName);
+        if (!layer) { throw new Error("Layer not found"); }
+        var fx = layer.property("ADBE Effect Parade");
+        if (!fx || fx.numProperties === 0) { throw new Error("Layer has no effects"); }
+        var target = null;
+        if (args.effectIndex !== undefined && args.effectIndex !== null) {
+            target = fx.property(args.effectIndex);
+        } else if (args.effectName) {
+            for (var i = 1; i <= fx.numProperties; i++) {
+                if (fx.property(i).name === args.effectName) { target = fx.property(i); break; }
+            }
+        }
+        if (!target) { throw new Error("Effect not found"); }
+        var nm = target.name;
+        target.remove();
+        return JSON.stringify({ status: "success", message: "Effect removed", removed: nm }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- reorderEffect: move an effect to a new position in the effect stack ---
+function reorderEffect(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var layer = mcpFindLayer(comp, args.layerIndex, args.layerName);
+        if (!layer) { throw new Error("Layer not found"); }
+        var fx = layer.property("ADBE Effect Parade");
+        if (!fx || fx.numProperties === 0) { throw new Error("Layer has no effects"); }
+        var e = fx.property(args.effectIndex);
+        if (!e) { throw new Error("Effect not found at index " + args.effectIndex); }
+        var effectName = e.name;
+        var to = Math.max(1, Math.min(fx.numProperties, args.toIndex));
+        e.moveTo(to);
+        // NOTE: `e` is invalidated after moveTo(); do not read from it afterwards.
+        return JSON.stringify({ status: "success", message: "Effect reordered", effect: effectName, newIndex: to }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- createLight: add a light layer ---
+function createLight(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var name = args.name || "Light";
+        var center = args.position ? [args.position[0], args.position[1]] : [comp.width / 2, comp.height / 2];
+        var light = comp.layers.addLight(name, center);
+        var lt = { "parallel": LightType.PARALLEL, "spot": LightType.SPOT, "point": LightType.POINT, "ambient": LightType.AMBIENT };
+        if (args.lightType && lt[args.lightType] !== undefined) { light.lightType = lt[args.lightType]; }
+
+        // User-supplied values must not fail silently: record any that don't apply.
+        var warnings = [];
+        if (args.position) {
+            try { light.property("Position").setValue(args.position); }
+            catch (e1) { warnings.push("position not applied: " + e1.toString()); }
+        }
+        if (args.pointOfInterest) {
+            try { light.property("Point of Interest").setValue(args.pointOfInterest); }
+            catch (e2) { warnings.push("pointOfInterest not applied: " + e2.toString()); }
+        }
+        var opts = light.property("ADBE Light Options Group");
+        if (opts) {
+            if (args.intensity !== undefined && args.intensity !== null) {
+                try { opts.property("ADBE Light Intensity").setValue(args.intensity); }
+                catch (e3) { warnings.push("intensity not applied: " + e3.toString()); }
+            }
+            if (args.color) {
+                try { opts.property("ADBE Light Color").setValue(args.color); }
+                catch (e4) { warnings.push("color not applied: " + e4.toString()); }
+            }
+        }
+        var lightResult = { status: "success", message: "Light created", name: light.name, index: light.index };
+        if (warnings.length) { lightResult.warnings = warnings; }
+        return JSON.stringify(lightResult, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- set3DLayer: toggle a layer's 3D switch ---
+function set3DLayer(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var layer = mcpFindLayer(comp, args.layerIndex, args.layerName);
+        if (!layer) { throw new Error("Layer not found"); }
+        layer.threeDLayer = (args.enabled === undefined) ? true : !!args.enabled;
+        return JSON.stringify({ status: "success", message: "3D switch updated", layer: layer.name, threeD: layer.threeDLayer }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- renderComposition: render a comp via the Render Queue (blocking) ---
+function renderComposition(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        if (!args.outPath) { throw new Error("outPath is required"); }
+        var rqItem = app.project.renderQueue.items.add(comp);
+        if (args.startTime !== undefined && args.startTime !== null) { rqItem.timeSpanStart = args.startTime; }
+        if (args.duration !== undefined && args.duration !== null) { rqItem.timeSpanDuration = args.duration; }
+        var om = rqItem.outputModule(1);
+        var warnings = [];
+        if (args.outputModuleTemplate) {
+            // Don't silently render with the wrong settings if the template name is bad.
+            try { om.applyTemplate(args.outputModuleTemplate); }
+            catch (et) { warnings.push("outputModuleTemplate '" + args.outputModuleTemplate + "' could not be applied; rendered with the default output module: " + et.toString()); }
+        }
+        om.file = new File(args.outPath);
+        app.project.renderQueue.render(); // blocking: freezes AE until the render finishes
+        var savedPath = om.file.fsName;
+        try { rqItem.remove(); } catch (er) {}
+        // Re-stat with a fresh File object (ExtendScript caches File.exists).
+        var verifyFile = new File(savedPath);
+        if (!verifyFile.exists) {
+            throw new Error("Render reported complete but the output file was not created: " + savedPath);
+        }
+        var renderResult = { status: "success", message: "Render complete", path: savedPath, comp: comp.name };
+        if (warnings.length) { renderResult.warnings = warnings; }
+        return JSON.stringify(renderResult, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- setKeyframeEase: apply temporal easing to existing keyframes of a property ---
+function setKeyframeEase(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var layer = mcpFindLayer(comp, args.layerIndex, args.layerName);
+        if (!layer) { throw new Error("Layer not found"); }
+        var prop = layer.property(args.propertyName);
+        if (!prop) { throw new Error("Property not found: " + args.propertyName); }
+        if (prop.numKeys === 0) { throw new Error("Property has no keyframes: " + args.propertyName); }
+        var influence = (args.influence !== undefined && args.influence !== null) ? args.influence : 33;
+        var easeType = args.easeType || "easyEase";
+        var sample = prop.keyValue(1);
+        var dim = (sample instanceof Array) ? sample.length : 1;
+        var keys = [];
+        if (args.keyIndex !== undefined && args.keyIndex !== null) { keys = [args.keyIndex]; }
+        else { for (var k = 1; k <= prop.numKeys; k++) { keys.push(k); } }
+        for (var ki = 0; ki < keys.length; ki++) {
+            var key = keys[ki];
+            if (easeType === "linear") {
+                prop.setInterpolationTypeAtKey(key, KeyframeInterpolationType.LINEAR, KeyframeInterpolationType.LINEAR);
+                continue;
+            }
+            // AE convention: "ease in" eases the incoming handle, "ease out" the outgoing.
+            // 0.1 is the minimum influence (~no ease) for the un-eased side.
+            var inInf = (easeType === "easeOut") ? 0.1 : influence;
+            var outInf = (easeType === "easeIn") ? 0.1 : influence;
+            var inEases = [], outEases = [];
+            for (var d = 0; d < dim; d++) {
+                inEases.push(new KeyframeEase(0, inInf));
+                outEases.push(new KeyframeEase(0, outInf));
+            }
+            prop.setInterpolationTypeAtKey(key, KeyframeInterpolationType.BEZIER, KeyframeInterpolationType.BEZIER);
+            prop.setTemporalEaseAtKey(key, inEases, outEases);
+        }
+        return JSON.stringify({ status: "success", message: "Keyframe ease applied", property: args.propertyName, keysAffected: keys.length, easeType: easeType }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- applyTrimPaths: add Trim Paths to a shape layer, optionally animate the "draw on" ---
+function applyTrimPaths(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var layer = mcpFindLayer(comp, args.layerIndex, args.layerName);
+        if (!layer) { throw new Error("Layer not found"); }
+        var contents = layer.property("ADBE Root Vectors Group");
+        if (!contents) { throw new Error("Layer is not a shape layer (no Contents)"); }
+        var trim = contents.addProperty("ADBE Vector Filter - Trim");
+        var startProp = trim.property("ADBE Vector Trim Start");
+        var endProp = trim.property("ADBE Vector Trim End");
+        var offsetProp = trim.property("ADBE Vector Trim Offset");
+        if (args.start !== undefined && args.start !== null) { startProp.setValue(args.start); }
+        if (args.offset !== undefined && args.offset !== null) { offsetProp.setValue(args.offset); }
+        if (args.drawOn) {
+            var from = (args.drawOn.from !== undefined) ? args.drawOn.from : 0;
+            var to = (args.drawOn.to !== undefined) ? args.drawOn.to : 100;
+            var st = (args.drawOn.startTime !== undefined) ? args.drawOn.startTime : 0;
+            var du = (args.drawOn.duration !== undefined) ? args.drawOn.duration : 1;
+            endProp.setValueAtTime(st, from);
+            endProp.setValueAtTime(st + du, to);
+        } else if (args.end !== undefined && args.end !== null) {
+            endProp.setValue(args.end);
+        }
+        return JSON.stringify({ status: "success", message: "Trim Paths applied", layer: layer.name }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- addTextAnimator: add a text animator with a range selector for per-character animation ---
+function addTextAnimator(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var layer = mcpFindLayer(comp, args.layerIndex, args.layerName);
+        if (!layer) { throw new Error("Layer not found"); }
+        var textProps = layer.property("ADBE Text Properties");
+        if (!textProps) { throw new Error("Layer is not a text layer"); }
+        var animators = textProps.property("ADBE Text Animators");
+        var animator = animators.addProperty("ADBE Text Animator");
+        if (args.name) { animator.name = args.name; }
+        var animProps = animator.property("ADBE Text Animator Properties");
+
+        var which = args.property || "opacity";
+        if (which === "opacity") {
+            animProps.addProperty("ADBE Text Opacity").setValue((args.value !== undefined) ? args.value : 0);
+        } else if (which === "position") {
+            animProps.addProperty("ADBE Text Position 3D").setValue(args.value || [0, -80, 0]);
+        } else if (which === "scale") {
+            animProps.addProperty("ADBE Text Scale 3D").setValue(args.value || [40, 40, 100]);
+        } else if (which === "rotation") {
+            animProps.addProperty("ADBE Text Rotation").setValue((args.value !== undefined) ? args.value : -30);
+        }
+
+        var selectors = animator.property("ADBE Text Selectors");
+        var sel = selectors.addProperty("ADBE Text Selector");
+        if (args.revealDuration) {
+            // Reveal left-to-right: animate the Range Selector Start from 0% to 100%.
+            // With the animator's Opacity = 0 (selected chars hidden), this makes the
+            // hidden selection retreat left-to-right, ending with ALL characters visible.
+            var st = (args.startTime !== undefined) ? args.startTime : 0;
+            var startProp = sel.property("ADBE Text Percent Start");
+            startProp.setValueAtTime(st, 0);
+            startProp.setValueAtTime(st + args.revealDuration, 100);
+        } else if (args.offset !== undefined && args.offset !== null) {
+            sel.property("ADBE Text Percent Offset").setValue(args.offset);
+        }
+        return JSON.stringify({ status: "success", message: "Text animator added", layer: layer.name, animator: animator.name }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- saveProject: save the current project (optionally to a new path) ---
+function saveProject(args) {
+    try {
+        if (args && args.path) {
+            app.project.save(new File(args.path));
+        } else {
+            if (!app.project.file) { throw new Error("Project has never been saved; provide a 'path'"); }
+            app.project.save();
+        }
+        return JSON.stringify({ status: "success", message: "Project saved", path: app.project.file ? app.project.file.fsName : null }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- getLayerDetails: rich introspection of a single layer ---
+function getLayerDetails(args) {
+    try {
+        var comp = mcpFindComp(args.compName || "");
+        if (!comp) { throw new Error("Composition not found"); }
+        var layer = mcpFindLayer(comp, args.layerIndex, args.layerName);
+        if (!layer) { throw new Error("Layer not found"); }
+        var effects = [];
+        var fx = layer.property("ADBE Effect Parade");
+        if (fx) {
+            for (var i = 1; i <= fx.numProperties; i++) {
+                var e = fx.property(i);
+                effects.push({ index: i, name: e.name, matchName: e.matchName });
+            }
+        }
+        var masks = layer.property("ADBE Mask Parade");
+        var info = {
+            status: "success",
+            name: layer.name,
+            index: layer.index,
+            enabled: layer.enabled,
+            threeD: layer.threeDLayer === true,
+            blendingMode: layer.blendingMode,
+            parent: layer.parent ? layer.parent.name : null,
+            startTime: layer.startTime,
+            inPoint: layer.inPoint,
+            outPoint: layer.outPoint,
+            numMasks: masks ? masks.numProperties : 0,
+            effects: effects
+        };
+        return JSON.stringify(info, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
+// --- deleteComposition: remove a composition from the project ---
+function deleteComposition(args) {
+    try {
+        var compName = args.compName || "";
+        var compIndex = args.compIndex;
+        var target = null;
+        if (compName) {
+            for (var i = 1; i <= app.project.numItems; i++) {
+                var it = app.project.item(i);
+                if (it instanceof CompItem && it.name === compName) { target = it; break; }
+            }
+        } else if (compIndex !== undefined && compIndex !== null) {
+            var it2 = app.project.item(compIndex);
+            if (it2 && it2 instanceof CompItem) { target = it2; }
+        }
+        if (!target) { throw new Error("Composition not found"); }
+        var nm = target.name;
+        target.remove();
+        return JSON.stringify({ status: "success", message: "Composition deleted", name: nm }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
 // --- setLayerProperties (modified to handle text properties) ---
 function setLayerProperties(args) {
     try {
@@ -1594,6 +2206,101 @@ function executeCommand(command, args) {
                 logToPanel("Calling setLayerMask function...");
                 result = setLayerMask(args);
                 logToPanel("Returned from setLayerMask.");
+                break;
+            case "saveFrame":
+                logToPanel("Calling saveFrame function...");
+                result = saveFrame(args);
+                logToPanel("Returned from saveFrame.");
+                break;
+            case "moveLayer":
+                logToPanel("Calling moveLayer function...");
+                result = moveLayer(args);
+                logToPanel("Returned from moveLayer.");
+                break;
+            case "deleteComposition":
+                logToPanel("Calling deleteComposition function...");
+                result = deleteComposition(args);
+                logToPanel("Returned from deleteComposition.");
+                break;
+            case "importFootage":
+                logToPanel("Calling importFootage function...");
+                result = importFootage(args);
+                logToPanel("Returned from importFootage.");
+                break;
+            case "precompose":
+                logToPanel("Calling precompose function...");
+                result = precompose(args);
+                logToPanel("Returned from precompose.");
+                break;
+            case "setLayerParent":
+                logToPanel("Calling setLayerParent function...");
+                result = setLayerParent(args);
+                logToPanel("Returned from setLayerParent.");
+                break;
+            case "createNull":
+                logToPanel("Calling createNull function...");
+                result = createNull(args);
+                logToPanel("Returned from createNull.");
+                break;
+            case "setBlendMode":
+                logToPanel("Calling setBlendMode function...");
+                result = setBlendMode(args);
+                logToPanel("Returned from setBlendMode.");
+                break;
+            case "setTrackMatte":
+                logToPanel("Calling setTrackMatte function...");
+                result = setTrackMatte(args);
+                logToPanel("Returned from setTrackMatte.");
+                break;
+            case "removeEffect":
+                logToPanel("Calling removeEffect function...");
+                result = removeEffect(args);
+                logToPanel("Returned from removeEffect.");
+                break;
+            case "reorderEffect":
+                logToPanel("Calling reorderEffect function...");
+                result = reorderEffect(args);
+                logToPanel("Returned from reorderEffect.");
+                break;
+            case "createLight":
+                logToPanel("Calling createLight function...");
+                result = createLight(args);
+                logToPanel("Returned from createLight.");
+                break;
+            case "set3DLayer":
+                logToPanel("Calling set3DLayer function...");
+                result = set3DLayer(args);
+                logToPanel("Returned from set3DLayer.");
+                break;
+            case "renderComposition":
+                logToPanel("Calling renderComposition function...");
+                result = renderComposition(args);
+                logToPanel("Returned from renderComposition.");
+                break;
+            case "setKeyframeEase":
+                logToPanel("Calling setKeyframeEase function...");
+                result = setKeyframeEase(args);
+                logToPanel("Returned from setKeyframeEase.");
+                break;
+            case "applyTrimPaths":
+                logToPanel("Calling applyTrimPaths function...");
+                result = applyTrimPaths(args);
+                logToPanel("Returned from applyTrimPaths.");
+                break;
+            case "addTextAnimator":
+                logToPanel("Calling addTextAnimator function...");
+                result = addTextAnimator(args);
+                logToPanel("Returned from addTextAnimator.");
+                break;
+            case "saveProject":
+                logToPanel("Calling saveProject function...");
+                result = saveProject(args);
+                logToPanel("Returned from saveProject.");
+                break;
+            case "getLayerDetails":
+                logToPanel("Calling getLayerDetails function...");
+                result = getLayerDetails(args);
+                logToPanel("Returned from getLayerDetails.");
                 break;
             default:
                 result = JSON.stringify({ error: "Unknown command: " + command });

@@ -190,7 +190,26 @@ server.tool(
       "setCompositionProperties",
       "duplicateLayer",
       "deleteLayer",
-      "setLayerMask"
+      "setLayerMask",
+      "saveFrame",
+      "moveLayer",
+      "importFootage",
+      "precompose",
+      "setLayerParent",
+      "createNull",
+      "setBlendMode",
+      "setTrackMatte",
+      "removeEffect",
+      "reorderEffect",
+      "createLight",
+      "set3DLayer",
+      "renderComposition",
+      "setKeyframeEase",
+      "applyTrimPaths",
+      "addTextAnimator",
+      "saveProject",
+      "getLayerDetails",
+      "deleteComposition"
     ];
     
     if (!allowedScripts.includes(script)) {
@@ -431,7 +450,718 @@ server.tool(
   }
 );
 
-// --- BEGIN NEW TOOLS --- 
+// Add a tool for saving a single composition frame to a PNG file
+server.tool(
+  "save-frame",
+  "Render a single frame of a composition to a PNG file at the given time, so the image can be inspected.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    time: z.number().min(0).optional().describe("Time in seconds of the frame to capture (default: 0)."),
+    outPath: z.string().describe("Absolute path of the PNG file to write (parent folders are created if needed).")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("saveFrame", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command to save frame at ${params.time ?? 0}s to "${params.outPath}" has been queued.\n` +
+                  `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
+                  `Use the "get-results" tool after a few seconds to check for results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing save-frame: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Add a tool for reordering a layer within its composition
+server.tool(
+  "move-layer",
+  "Reorder a layer within a composition (bring to front/back, or move before/after another layer, or to a specific index).",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndex: z.number().int().positive().optional().describe("1-based index of the layer to move (use this or layerName)."),
+    layerName: z.string().optional().describe("Name of the layer to move (use this or layerIndex)."),
+    position: z.enum(["front", "back", "before", "after"]).optional().describe("Where to move the layer. 'front' = topmost, 'back' = bottommost. For 'before'/'after', also provide a reference layer."),
+    toIndex: z.number().int().positive().optional().describe("Alternative to 'position': move the layer to this 1-based index."),
+    referenceLayerIndex: z.number().int().positive().optional().describe("Reference layer index for 'before'/'after'."),
+    referenceLayerName: z.string().optional().describe("Reference layer name for 'before'/'after'.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("moveLayer", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command to move layer has been queued.\n` +
+                  `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
+                  `Use the "get-results" tool after a few seconds to check for results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing move-layer: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: import footage into the project
+server.tool(
+  "import-footage",
+  "Import a footage file into the project, optionally adding it to a composition.",
+  {
+    filePath: z.string().describe("Absolute path of the file to import."),
+    importAs: z.enum(["footage", "comp"]).optional().describe("How to import the file."),
+    addToComp: z.boolean().optional().describe("Whether to add the imported item to a composition."),
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    position: z.array(z.number()).optional().describe("Position [x, y] of the layer if added to a comp."),
+    startTime: z.number().optional().describe("Start time in seconds of the layer if added to a comp.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("importFootage", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'import-footage' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing import-footage: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: precompose layers
+server.tool(
+  "precompose",
+  "Precompose one or more layers in a composition into a new nested composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndices: z.array(z.number().int().positive()).describe("1-based indices of the layers to precompose."),
+    name: z.string().optional().describe("Name of the new precomposition."),
+    moveAllAttributes: z.boolean().optional().describe("Whether to move all attributes into the new composition.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("precompose", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'precompose' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing precompose: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: set a layer's parent
+server.tool(
+  "set-parent",
+  "Set or remove the parent of a layer in a composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndex: z.number().int().positive().optional().describe("1-based index of the child layer (use this or layerName)."),
+    layerName: z.string().optional().describe("Name of the child layer (use this or layerIndex)."),
+    parentIndex: z.number().int().positive().optional().describe("1-based index of the parent layer (use this or parentName)."),
+    parentName: z.string().optional().describe("Name of the parent layer (use this or parentIndex)."),
+    unparent: z.boolean().optional().describe("If true, removes the layer's parent.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("setLayerParent", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'set-parent' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing set-parent: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: create a null layer
+server.tool(
+  "create-null",
+  "Create a null object layer in a composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    name: z.string().optional().describe("Name of the new null layer."),
+    position: z.array(z.number()).optional().describe("Position [x, y] of the null layer."),
+    duration: z.number().positive().optional().describe("Duration in seconds of the null layer.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("createNull", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'create-null' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing create-null: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: set a layer's blend mode
+server.tool(
+  "set-blend-mode",
+  "Set the blending mode of a layer in a composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndex: z.number().int().positive().optional().describe("1-based index of the layer (use this or layerName)."),
+    layerName: z.string().optional().describe("Name of the layer (use this or layerIndex)."),
+    mode: z.enum(["normal", "add", "screen", "multiply", "overlay", "lighten", "darken", "softLight", "hardLight", "difference", "colorDodge", "colorBurn", "linearDodge", "linearBurn", "hue", "saturation", "color", "luminosity"]).describe("The blending mode to apply.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("setBlendMode", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'set-blend-mode' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing set-blend-mode: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: set a layer's track matte
+server.tool(
+  "set-track-matte",
+  "Set or remove the track matte of a layer in a composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndex: z.number().int().positive().optional().describe("1-based index of the layer (use this or layerName)."),
+    layerName: z.string().optional().describe("Name of the layer (use this or layerIndex)."),
+    matteType: z.enum(["none", "alpha", "alphaInverted", "luma", "lumaInverted"]).describe("The track matte type to apply."),
+    matteLayerIndex: z.number().int().positive().optional().describe("1-based index of the matte layer (use this or matteLayerName)."),
+    matteLayerName: z.string().optional().describe("Name of the matte layer (use this or matteLayerIndex).")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("setTrackMatte", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'set-track-matte' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing set-track-matte: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: remove an effect from a layer
+server.tool(
+  "remove-effect",
+  "Remove an effect from a layer in a composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndex: z.number().int().positive().optional().describe("1-based index of the layer (use this or layerName)."),
+    layerName: z.string().optional().describe("Name of the layer (use this or layerIndex)."),
+    effectIndex: z.number().int().positive().optional().describe("1-based index of the effect to remove (use this or effectName)."),
+    effectName: z.string().optional().describe("Name of the effect to remove (use this or effectIndex).")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("removeEffect", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'remove-effect' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing remove-effect: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: reorder an effect on a layer
+server.tool(
+  "reorder-effect",
+  "Reorder an effect within a layer's effect stack in a composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndex: z.number().int().positive().optional().describe("1-based index of the layer (use this or layerName)."),
+    layerName: z.string().optional().describe("Name of the layer (use this or layerIndex)."),
+    effectIndex: z.number().int().positive().describe("1-based index of the effect to move."),
+    toIndex: z.number().int().positive().describe("1-based target index to move the effect to.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("reorderEffect", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'reorder-effect' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing reorder-effect: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: create a light layer
+server.tool(
+  "create-light",
+  "Create a light layer in a composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    name: z.string().optional().describe("Name of the new light layer."),
+    lightType: z.enum(["parallel", "spot", "point", "ambient"]).optional().describe("The type of light to create."),
+    position: z.array(z.number()).optional().describe("Position [x, y, z] of the light."),
+    pointOfInterest: z.array(z.number()).optional().describe("Point of interest [x, y, z] of the light."),
+    intensity: z.number().optional().describe("Intensity of the light."),
+    color: z.array(z.number()).optional().describe("Color [r, g, b] of the light (0-1).")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("createLight", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'create-light' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing create-light: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: toggle 3D on a layer
+server.tool(
+  "set-3d-layer",
+  "Enable or disable the 3D property of a layer in a composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndex: z.number().int().positive().optional().describe("1-based index of the layer (use this or layerName)."),
+    layerName: z.string().optional().describe("Name of the layer (use this or layerIndex)."),
+    enabled: z.boolean().optional().describe("Whether to enable (true) or disable (false) the 3D property.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("set3DLayer", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'set-3d-layer' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing set-3d-layer: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: render a composition to video
+server.tool(
+  "render-video",
+  "Render a composition to a video file via the render queue.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    outPath: z.string().describe("Absolute path of the output file to write."),
+    outputModuleTemplate: z.string().optional().describe("Name of the output module template to use."),
+    startTime: z.number().optional().describe("Start time in seconds of the render range."),
+    duration: z.number().optional().describe("Duration in seconds of the render range.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("renderComposition", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'render-video' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing render-video: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: set keyframe ease
+server.tool(
+  "set-keyframe-ease",
+  "Set the temporal ease (easing) on keyframes of a layer property in a composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndex: z.number().int().positive().optional().describe("1-based index of the layer (use this or layerName)."),
+    layerName: z.string().optional().describe("Name of the layer (use this or layerIndex)."),
+    propertyName: z.string().describe("Name of the property whose keyframes to ease."),
+    easeType: z.enum(["easyEase", "easeIn", "easeOut", "linear"]).optional().describe("The type of ease to apply."),
+    influence: z.number().optional().describe("Ease influence percentage."),
+    keyIndex: z.number().int().positive().optional().describe("1-based index of a specific keyframe to ease (omit to apply to all).")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("setKeyframeEase", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'set-keyframe-ease' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing set-keyframe-ease: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: apply trim paths to a shape layer
+server.tool(
+  "apply-trim-paths",
+  "Apply Trim Paths to a shape layer in a composition, optionally with a draw-on animation.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndex: z.number().int().positive().optional().describe("1-based index of the layer (use this or layerName)."),
+    layerName: z.string().optional().describe("Name of the layer (use this or layerIndex)."),
+    start: z.number().optional().describe("Trim Paths start percentage."),
+    end: z.number().optional().describe("Trim Paths end percentage."),
+    offset: z.number().optional().describe("Trim Paths offset in degrees."),
+    drawOn: z.object({
+      from: z.number().optional(),
+      to: z.number().optional(),
+      startTime: z.number().optional(),
+      duration: z.number().optional()
+    }).optional().describe("Optional draw-on animation settings.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("applyTrimPaths", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'apply-trim-paths' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing apply-trim-paths: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: add a text animator to a text layer
+server.tool(
+  "add-text-animator",
+  "Add a text animator to a text layer in a composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndex: z.number().int().positive().optional().describe("1-based index of the layer (use this or layerName)."),
+    layerName: z.string().optional().describe("Name of the layer (use this or layerIndex)."),
+    property: z.enum(["opacity", "position", "scale", "rotation"]).optional().describe("The property the animator controls."),
+    value: z.any().optional().describe("The animator property value."),
+    offset: z.number().optional().describe("Range selector offset."),
+    revealDuration: z.number().optional().describe("Duration of the reveal animation in seconds."),
+    startTime: z.number().optional().describe("Start time in seconds of the animation."),
+    name: z.string().optional().describe("Name of the animator.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("addTextAnimator", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'add-text-animator' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing add-text-animator: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: save the project
+server.tool(
+  "save-project",
+  "Save the current After Effects project, optionally to a new path.",
+  {
+    path: z.string().optional().describe("Absolute path to save the project to. Saves in place if omitted.")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("saveProject", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'save-project' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing save-project: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Tool: get detailed information about a layer
+server.tool(
+  "get-layer-details",
+  "Get detailed information about a layer in a composition.",
+  {
+    compName: z.string().optional().describe("Name of the composition. Defaults to the active composition if omitted."),
+    layerIndex: z.number().int().positive().optional().describe("1-based index of the layer (use this or layerName)."),
+    layerName: z.string().optional().describe("Name of the layer (use this or layerIndex).")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("getLayerDetails", params);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'get-layer-details' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing get-layer-details: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// Add a tool for deleting a composition from the project
+server.tool(
+  "delete-composition",
+  "Delete a composition from the project (by name or 1-based project item index).",
+  {
+    compName: z.string().optional().describe("Name of the composition to delete (use this or compIndex)."),
+    compIndex: z.number().int().positive().optional().describe("1-based project item index of the composition (use this or compName).")
+  },
+  async (params) => {
+    try {
+      writeCommandFile("deleteComposition", params);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Command 'delete-composition' has been queued. Use the "get-results" tool after a few seconds to check results.`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error queuing delete-composition: ${String(error)}`
+          }
+        ],
+        isError: true
+      };
+    }
+  }
+);
+
+// --- BEGIN NEW TOOLS ---
 
 // Zod schema for common layer identification
 const LayerIdentifierSchema = {
