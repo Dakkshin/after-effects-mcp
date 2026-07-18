@@ -1281,6 +1281,25 @@ if (typeof JSON.stringify !== "function") {
     })();
 }
 
+// toISOString polyfill for ExtendScript. ExtendScript's Date is ES3 and has NO
+// toISOString, so `new Date().toISOString()` throws. Where that call sits inside a
+// try/catch (as when stamping the result file), the throw is swallowed and the result
+// is written WITHOUT its correlation fields — which made the MCP unable to tell a fresh
+// result from an old one. Defining it here makes the stamping succeed.
+if (typeof Date.prototype.toISOString !== "function") {
+    Date.prototype.toISOString = function () {
+        function pad(n) { return (n < 10 ? "0" : "") + n; }
+        function pad3(n) { return (n < 10 ? "00" : (n < 100 ? "0" : "")) + n; }
+        return this.getUTCFullYear() + "-" +
+            pad(this.getUTCMonth() + 1) + "-" +
+            pad(this.getUTCDate()) + "T" +
+            pad(this.getUTCHours()) + ":" +
+            pad(this.getUTCMinutes()) + ":" +
+            pad(this.getUTCSeconds()) + "." +
+            pad3(this.getUTCMilliseconds()) + "Z";
+    };
+}
+
 // Detect AE version (AE 2025 = version 25.x, AE 2026 = version 26.x)
 var aeVersion = parseFloat(app.version);
 var isAE2025OrLater = aeVersion >= 25.0;
@@ -1317,24 +1336,35 @@ autoRunCheckbox.value = true;
 var checkInterval = 2000;
 var isChecking = false;
 
-// Command file path - use Documents folder for reliable access
-function getCommandFilePath() {
-    var userFolder = Folder.myDocuments;
-    var bridgeFolder = new Folder(userFolder.fsName + "/ae-mcp-bridge");
+// Resolve the shared bridge folder. Honors the AE_MCP_BRIDGE_DIR environment variable
+// (read from the After Effects process) so both sides can rendezvous on a custom path,
+// and otherwise falls back to ~/Documents/ae-mcp-bridge. Note: on a split setup (e.g.
+// Node in WSL, AE on Windows) the two processes have separate environments, so this
+// only takes effect if AE's OWN environment defines the variable; when it isn't set,
+// the Documents default must resolve to the same physical folder on both sides.
+function getBridgeFolder() {
+    var custom = null;
+    try { custom = $.getenv("AE_MCP_BRIDGE_DIR"); } catch (e) { custom = null; }
+    var bridgeFolder;
+    if (custom && ("" + custom).length > 0) {
+        bridgeFolder = new Folder(custom);
+    } else {
+        bridgeFolder = new Folder(Folder.myDocuments.fsName + "/ae-mcp-bridge");
+    }
     if (!bridgeFolder.exists) {
         bridgeFolder.create();
     }
-    return bridgeFolder.fsName + "/ae_command.json";
+    return bridgeFolder;
 }
 
-// Result file path - use Documents folder for reliable access
+// Command file path
+function getCommandFilePath() {
+    return getBridgeFolder().fsName + "/ae_command.json";
+}
+
+// Result file path
 function getResultFilePath() {
-    var userFolder = Folder.myDocuments;
-    var bridgeFolder = new Folder(userFolder.fsName + "/ae-mcp-bridge");
-    if (!bridgeFolder.exists) {
-        bridgeFolder.create();
-    }
-    return bridgeFolder.fsName + "/ae_mcp_result.json";
+    return getBridgeFolder().fsName + "/ae_mcp_result.json";
 }
 
 // --- setCompositionProperties: set duration, frameRate, etc. on active or named comp ---
@@ -1495,7 +1525,7 @@ function getLayerInfo() {
 }
 
 // Execute command
-function executeCommand(command, args) {
+function executeCommand(command, args, commandId) {
     var result = "";
 
     logToPanel("Executing command: " + command);
@@ -1595,6 +1625,9 @@ function executeCommand(command, args) {
                 result = setLayerMask(args);
                 logToPanel("Returned from setLayerMask.");
                 break;
+            case "ping":
+                result = pingBridge();
+                break;
             default:
                 result = JSON.stringify({ error: "Unknown command: " + command });
         }
@@ -1604,18 +1637,18 @@ function executeCommand(command, args) {
         logToPanel("Preparing to write result file...");
         var resultString = (typeof result === 'string') ? result : JSON.stringify(result);
         
-        // Try to parse the result as JSON to add a timestamp
+        // Try to parse the result as JSON to add correlation metadata
         try {
             var resultObj = JSON.parse(resultString);
-            // Add a timestamp to help identify if we're getting fresh results
+            // Stamp the result so the MCP side can correlate it to the exact request.
             resultObj._responseTimestamp = new Date().toISOString();
             resultObj._commandExecuted = command;
+            resultObj._commandId = commandId;
             resultString = JSON.stringify(resultObj, null, 2);
-            logToPanel("Added timestamp to result JSON for tracking freshness.");
+            logToPanel("Stamped result with commandId " + commandId + " for correlation.");
         } catch (parseError) {
-            // If it's not valid JSON, append the timestamp as a comment
-            logToPanel("Could not parse result as JSON to add timestamp: " + parseError.toString());
-            // We'll still continue with the original string
+            // If it's not valid JSON, continue with the original string
+            logToPanel("Could not parse result as JSON to add correlation metadata: " + parseError.toString());
         }
         
         var resultFile = new File(getResultFilePath());
@@ -1656,9 +1689,10 @@ function executeCommand(command, args) {
         // Write detailed error to result file
         try {
             logToPanel("Attempting to write ERROR to result file...");
-            var errorResult = JSON.stringify({ 
-                status: "error", 
+            var errorResult = JSON.stringify({
+                status: "error",
                 command: command,
+                _commandId: commandId,
                 message: error.toString(),
                 line: error.line,
                 fileName: error.fileName
@@ -1712,6 +1746,22 @@ function logToPanel(message) {
     logText.text = timestamp + ": " + message + "\n" + logText.text;
 }
 
+// Lightweight read-only liveness response for the bridge-status MCP tool. Reports the
+// AE version and active-composition context without touching the project (contrast with
+// bridgeTestEffects, which mutates). Function declarations are hoisted, so definition
+// order relative to the switch does not matter.
+function pingBridge() {
+    var info = { status: "success", pong: true, aeVersion: app.version };
+    try { info.project = app.project.file ? app.project.file.name : "Untitled Project"; } catch (e) {}
+    try {
+        if (app.project.activeItem instanceof CompItem) {
+            var ac = app.project.activeItem;
+            info.activeComp = { name: ac.name, width: ac.width, height: ac.height, numLayers: ac.numLayers };
+        }
+    } catch (e2) {}
+    return JSON.stringify(info, null, 2);
+}
+
 // Check for new commands
 function checkForCommands() {
     if (!autoRunCheckbox.value || isChecking) return;
@@ -1734,9 +1784,9 @@ function checkForCommands() {
                 if (commandData.status === "pending") {
                     // Update status to running
                     updateCommandStatus("running");
-                    
-                    // Execute the command
-                    executeCommand(commandData.command, commandData.args || {});
+
+                    // Execute the command (pass commandId through for result correlation)
+                    executeCommand(commandData.command, commandData.args || {}, commandData.commandId);
                 }
             }
         }

@@ -125,6 +125,27 @@ Go to your client (e.g., Claude or Cursor) and update your config file:
 }
 ```
 
+#### Optional: `AE_MCP_BRIDGE_DIR`
+By default the server and the bridge panel exchange files in `~/Documents/ae-mcp-bridge`.
+Set the `AE_MCP_BRIDGE_DIR` environment variable to point both sides at a custom folder —
+useful when the MCP host and After Effects run in different OS contexts (for example, Node
+in WSL driving After Effects on Windows) and need to rendezvous on a shared path:
+
+```json
+{
+  "mcpServers": {
+    "AfterEffectsMCP": {
+      "command": "node",
+      "args": ["PATH/TO/after-effects-mcp/build/index.js"],
+      "env": { "AE_MCP_BRIDGE_DIR": "/mnt/c/Users/you/Documents/ae-mcp-bridge" }
+    }
+  }
+}
+```
+
+The panel honors the same variable from After Effects' own environment; when it is unset,
+the `~/Documents/ae-mcp-bridge` default must resolve to the same physical folder on both sides.
+
 ### ▶️ Running the Server
 
 1. **Start the MCP server**
@@ -205,6 +226,7 @@ You can animate layers with:
 | `run-script`                | Run a JS script inside AE              |
 | `get-results`               | Get script results                     |
 | `get-help`                  | Help for available commands            |
+| `bridge-status`             | Read-only liveness probe: is the panel open and responding? |
 | `setLayerKeyframe`          | Add keyframe to layer property         |
 | `setLayerExpression`        | Add/remove expressions from properties|
 | `setLayerProperties`        | Set layer properties (position, scale, rotation, opacity, blendMode, threeDLayer, trackMatteType, enabled, etc.) |

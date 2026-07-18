@@ -21,16 +21,26 @@ const __dirname = path.dirname(__filename);
 const SCRIPTS_DIR = path.join(__dirname, "scripts");
 const TEMP_DIR = path.join(__dirname, "temp");
 
-// Get the correct directory for AE bridge files
-// Use ~/Documents/ae-mcp-bridge for reliable cross-process access
+// Get the correct directory for AE bridge files.
+// Defaults to ~/Documents/ae-mcp-bridge. Set AE_MCP_BRIDGE_DIR to override when the
+// MCP host and After Effects run in different OS contexts (for example, Node in WSL
+// driving Windows After Effects) and must rendezvous on a shared path.
 function getAETempDir(): string {
-  const homeDir = os.homedir();
-  const bridgeDir = path.join(homeDir, 'Documents', 'ae-mcp-bridge');
+  const bridgeDir = process.env.AE_MCP_BRIDGE_DIR || path.join(os.homedir(), 'Documents', 'ae-mcp-bridge');
   // Ensure the directory exists
   if (!fs.existsSync(bridgeDir)) {
     fs.mkdirSync(bridgeDir, { recursive: true });
   }
   return bridgeDir;
+}
+
+// Monotonic id stamped on every queued command so a result can be correlated back to
+// the exact request that produced it. The panel echoes it back as `_commandId`.
+let commandCounter = 0;
+let lastCommandId: string | null = null;
+function nextCommandId(): string {
+  commandCounter += 1;
+  return `${Date.now()}-${commandCounter}`;
 }
 
 // Headless CLI execution has been removed. All interactions are routed through the Bridge panel.
@@ -50,19 +60,33 @@ function readResultsFromTempFile(): string {
       
       const content = fs.readFileSync(tempFilePath, 'utf8');
       console.error(`Result file content length: ${content.length} bytes`);
-      
-      // If the result file is older than 30 seconds, warn the user
-      const thirtySecondsAgo = new Date(Date.now() - 30 * 1000);
-      if (stats.mtime < thirtySecondsAgo) {
-        console.error(`WARNING: Result file is older than 30 seconds. After Effects may not be updating results.`);
-        return JSON.stringify({ 
-          warning: "Result file appears to be stale (not recently updated).",
-          message: "This could indicate After Effects is not properly writing results or the MCP Bridge Auto panel isn't running.",
-          lastModified: stats.mtime.toISOString(),
-          originalContent: content
-        });
+
+      // Correlate by commandId instead of wall-clock mtime. The panel echoes the
+      // queued command's `_commandId` onto each result; if it doesn't match the last
+      // command we sent, the result belongs to an earlier request. mtime is unreliable
+      // here — the bridge dir is often a shared/mounted path (e.g. WSL /mnt/c) where
+      // clock skew and simple re-reads trip a naive "older than N seconds" check on
+      // perfectly correct data. If the panel predates this field (`_commandId` absent),
+      // fall through and return the content as-is rather than crying stale.
+      if (lastCommandId) {
+        try {
+          const parsed = JSON.parse(content);
+          if (parsed && typeof parsed === 'object' && '_commandId' in parsed && parsed._commandId !== lastCommandId) {
+            console.error(`Result commandId (${parsed._commandId}) != last queued (${lastCommandId}).`);
+            return JSON.stringify({
+              warning: "Result is from an earlier command (commandId mismatch).",
+              message: "After Effects has not yet written the result for the most recent command. Ensure the MCP Bridge Auto panel is open and call get-results again shortly.",
+              expectedCommandId: lastCommandId,
+              resultCommandId: parsed._commandId,
+              lastModified: stats.mtime.toISOString(),
+              originalContent: content
+            }, null, 2);
+          }
+        } catch {
+          // Not valid JSON yet (panel may be mid-write); return raw content below.
+        }
       }
-      
+
       return content;
     } else {
       console.error(`Result file not found at: ${tempFilePath}`);
@@ -74,8 +98,10 @@ function readResultsFromTempFile(): string {
   }
 }
 
-// Helper to wait for a fresh result produced by a specific command
-async function waitForBridgeResult(expectedCommand?: string, timeoutMs: number = 5000, pollMs: number = 250): Promise<string> {
+// Helper to wait for the fresh result produced by a specific queued command, matched
+// by its unique commandId (see nextCommandId / writeCommandFile). Pass the id returned
+// by writeCommandFile; omit it to accept the next result of any command.
+async function waitForBridgeResult(expectedCommandId?: string, timeoutMs: number = 5000, pollMs: number = 250): Promise<string> {
   const start = Date.now();
   const resultPath = path.join(getAETempDir(), 'ae_mcp_result.json');
   let lastSize = -1;
@@ -88,7 +114,7 @@ async function waitForBridgeResult(expectedCommand?: string, timeoutMs: number =
           lastSize = content.length;
           try {
             const parsed = JSON.parse(content);
-            if (!expectedCommand || parsed._commandExecuted === expectedCommand) {
+            if (!expectedCommandId || parsed._commandId === expectedCommandId) {
               return content;
             }
           } catch {
@@ -101,24 +127,29 @@ async function waitForBridgeResult(expectedCommand?: string, timeoutMs: number =
     }
     await new Promise(r => setTimeout(r, pollMs));
   }
-  return JSON.stringify({ error: `Timed out waiting for bridge result${expectedCommand ? ` for command '${expectedCommand}'` : ''}.` });
+  return JSON.stringify({ error: `Timed out waiting for bridge result${expectedCommandId ? ` for commandId '${expectedCommandId}'` : ''}.` });
 }
 
-// Helper function to write command to file
-function writeCommandFile(command: string, args: Record<string, any> = {}): void {
+// Helper function to write command to file. Returns the unique commandId stamped on
+// this request; pass it to waitForBridgeResult to await the matching result.
+function writeCommandFile(command: string, args: Record<string, any> = {}): string {
+  const commandId = nextCommandId();
   try {
     const commandFile = path.join(getAETempDir(), 'ae_command.json');
     const commandData = {
       command,
       args,
+      commandId,
       timestamp: new Date().toISOString(),
       status: "pending"  // pending, running, completed, error
     };
     fs.writeFileSync(commandFile, JSON.stringify(commandData, null, 2));
-    console.error(`Command "${command}" written to ${commandFile}`);
+    lastCommandId = commandId;
+    console.error(`Command "${command}" (${commandId}) written to ${commandFile}`);
   } catch (error) {
     console.error("Error writing command file:", error);
   }
+  return commandId;
 }
 
 // Helper function to clear the results file to avoid stale cache
@@ -147,8 +178,8 @@ server.resource(
   async (uri) => {
     // Clear old results, queue the command, and wait for bridge output
     clearResultsFile();
-    writeCommandFile("listCompositions", {});
-    const result = await waitForBridgeResult("listCompositions", 6000, 250);
+    const commandId = writeCommandFile("listCompositions", {});
+    const result = await waitForBridgeResult(commandId, 6000, 250);
 
     return {
       contents: [{
@@ -943,6 +974,56 @@ server.tool(
         isError: true
       };
     }
+  }
+);
+
+// Read-only liveness probe. Confirms the "MCP Bridge Auto" panel is open and polling
+// and reports round-trip latency plus basic project context — WITHOUT mutating the
+// project (unlike run-bridge-test, which applies effects). Use this as the first
+// diagnostic when results stop coming back: the panel is not headless and closes on
+// every After Effects restart, so a silent "pending" almost always means it's closed.
+server.tool(
+  "bridge-status",
+  "Check whether the After Effects MCP Bridge Auto panel is open and responding (read-only liveness probe; does not modify the project).",
+  {
+    timeoutMs: z.number().int().positive().optional().describe("How long to wait for the panel to respond, in ms (default 4000).")
+  },
+  async ({ timeoutMs = 4000 }) => {
+    const start = Date.now();
+    clearResultsFile();
+    const commandId = writeCommandFile("ping", {});
+    const raw = await waitForBridgeResult(commandId, timeoutMs, 200);
+    const roundTripMs = Date.now() - start;
+
+    let responsive = false;
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(raw);
+      responsive = !!parsed && parsed._commandId === commandId && !parsed.error;
+    } catch {
+      // fall through as unresponsive
+    }
+
+    const report = responsive
+      ? {
+          panelResponsive: true,
+          roundTripMs,
+          bridgeDir: getAETempDir(),
+          aeVersion: parsed.aeVersion,
+          project: parsed.project,
+          activeComp: parsed.activeComp
+        }
+      : {
+          panelResponsive: false,
+          roundTripMs,
+          bridgeDir: getAETempDir(),
+          hint: "No fresh response from the bridge panel. In After Effects open Window > mcp-bridge-auto.jsx (it must be reopened after every AE restart) and make sure 'Auto-run commands' is checked. On AE 2025+ it can only be a floating window.",
+          detail: parsed || raw
+        };
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(report, null, 2) }]
+    };
   }
 );
 
