@@ -439,9 +439,31 @@ const LayerIdentifierSchema = {
   layerIndex: z.number().int().positive().describe("1-based index of the target layer within the composition.")
 };
 
-// Zod schema for keyframe value (more specific types might be needed depending on property)
-// Using z.any() for flexibility, but can be refined (e.g., z.array(z.number()) for position/scale)
-const KeyframeValueSchema = z.unknown().describe("The value for the keyframe (e.g., [x,y] for Position, [w,h] for Scale, angle for Rotation, percentage for Opacity)");
+// Zod schema for keyframe value: a scalar (Opacity, Rotation), an array of
+// numbers (Position, Scale), or a string form of either that some MCP clients
+// send because this parameter used to be untyped.
+const KeyframeValueSchema = z.union([
+  z.number(),
+  z.array(z.number()),
+  z.string()
+]).describe("The value for the keyframe (e.g., [x,y] for Position, [w,h] for Scale, angle for Rotation, percentage for Opacity)");
+
+// Parse keyframe values that arrive as JSON strings (e.g. "[1600,1600]" or "50")
+// so the ExtendScript bridge always receives a real array/number — AE's
+// setValueAtTime rejects strings for array-valued properties like Scale.
+function normalizeKeyframeValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^\[[\d\s.,\-eE]*\]$/.test(trimmed) || /^-?\d+(\.\d+)?$/.test(trimmed)) {
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        // Leave as-is; the bridge reports the error
+      }
+    }
+  }
+  return value;
+}
 
 // Tool for setting a layer keyframe
 server.tool(
@@ -456,7 +478,7 @@ server.tool(
   async (parameters) => {
     try {
       // Queue the command for After Effects
-      writeCommandFile("setLayerKeyframe", parameters);
+      writeCommandFile("setLayerKeyframe", { ...parameters, value: normalizeKeyframeValue(parameters.value) });
       
       return {
         content: [

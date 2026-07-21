@@ -741,6 +741,56 @@ function batchSetLayerProperties(args) {
 }
 
 /**
+ * Normalizes a keyframe value against the target property's current value.
+ * MCP clients sometimes deliver array values as JSON strings (e.g. "[1600,1600]"),
+ * and callers may pass 2D values for 3D properties (or vice versa) or a scalar
+ * for a multi-dimensional property like Scale.
+ * @param {Property} property - The AE property the value will be applied to.
+ * @param {any} value - The raw value from the command args.
+ * @returns {any} A value whose shape matches the property (array of the right length, or scalar).
+ */
+function normalizeKeyframeValue(property, value) {
+    // Parse values that arrived as strings, e.g. "[1600,1600]" or "50"
+    if (typeof value === "string") {
+        var trimmed = value.replace(/^\s+|\s+$/g, "");
+        if (/^\[[\d\s.,\-eE]*\]$/.test(trimmed) || /^-?\d+(\.\d+)?$/.test(trimmed)) {
+            try {
+                value = JSON.parse(trimmed);
+            } catch (parseErr) {
+                // Leave as-is; AE will report the type error
+            }
+        }
+    }
+
+    var current = property.value;
+    if (current instanceof Array) {
+        // Multi-dimensional property (Position, Scale, Anchor Point, ...)
+        if (!(value instanceof Array)) {
+            if (typeof value === "number") {
+                // Uniform expansion: 160 -> [160,160] or [160,160,160]
+                var uniform = [];
+                for (var i = 0; i < current.length; i++) {
+                    uniform.push(value);
+                }
+                value = uniform;
+            }
+        } else if (value.length !== current.length) {
+            // 2D value on a 3D property (or vice versa): pad missing
+            // dimensions from the current value (preserves z), drop extras.
+            var adjusted = value.slice(0, current.length);
+            for (var d = adjusted.length; d < current.length; d++) {
+                adjusted.push(current[d]);
+            }
+            value = adjusted;
+        }
+    } else if (typeof current === "number" && value instanceof Array && value.length > 0) {
+        // Scalar property (Opacity, Rotation) given a one-element array
+        value = value[0];
+    }
+    return value;
+}
+
+/**
  * Sets a keyframe for a specific property on a layer.
  * Indices are 1-based for After Effects collections.
  * @param {number} compIndex - The index of the composition (1-based).
@@ -792,7 +842,7 @@ function setLayerKeyframe(compIndex, layerIndex, propertyName, timeInSeconds, va
              property.setValueAtTime(comp.time, property.value); // Set initial keyframe if none exist
         }
 
-
+        value = normalizeKeyframeValue(property, value);
         property.setValueAtTime(timeInSeconds, value);
 
         return JSON.stringify({ success: true, message: "Keyframe set for '" + propertyName + "' on layer '" + layer.name + "' at " + timeInSeconds + "s." });
