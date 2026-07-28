@@ -18,6 +18,7 @@ const possiblePaths = isMac
   ? [
       '/Applications/Adobe After Effects 2026',
       '/Applications/Adobe After Effects 2025',
+      '/Applications/Adobe After Effects (Beta)',
       '/Applications/Adobe After Effects 2024',
       '/Applications/Adobe After Effects 2023',
       '/Applications/Adobe After Effects 2022',
