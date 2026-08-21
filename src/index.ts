@@ -850,7 +850,7 @@ These are internal names used by After Effects that can be used with the \`effec
 ### Blur & Sharpen
 - Gaussian Blur: "ADBE Gaussian Blur 2"
 - Camera Lens Blur: "ADBE Camera Lens Blur"
-- Directional Blur: "ADBE Directional Blur"
+- Directional Blur: "ADBE Motion Blur"
 - Radial Blur: "ADBE Radial Blur"
 - Smart Blur: "ADBE Smart Blur"
 - Unsharp Mask: "ADBE Unsharp Mask"
@@ -866,7 +866,7 @@ These are internal names used by After Effects that can be used with the \`effec
 - Vibrance: "ADBE Vibrance"
 
 ### Stylistic
-- Glow: "ADBE Glow"
+- Glow: "ADBE Glo2"
 - Drop Shadow: "ADBE Drop Shadow"
 - Bevel Alpha: "ADBE Bevel Alpha"
 - Noise: "ADBE Noise"
