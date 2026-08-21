@@ -51,10 +51,13 @@ function readResultsFromTempFile(): string {
       const content = fs.readFileSync(tempFilePath, 'utf8');
       console.error(`Result file content length: ${content.length} bytes`);
       
-      // If the result file is older than 30 seconds, warn the user
-      const thirtySecondsAgo = new Date(Date.now() - 30 * 1000);
-      if (stats.mtime < thirtySecondsAgo) {
-        console.error(`WARNING: Result file is older than 30 seconds. After Effects may not be updating results.`);
+      // If the result file is older than 2 minutes, warn the user. (30s was too
+      // aggressive for interactive/chat workflows, where a few seconds routinely
+      // pass between run-script and get-results, causing false "stale" warnings
+      // on perfectly fresh results.)
+      const staleThresholdAgo = new Date(Date.now() - 120 * 1000);
+      if (stats.mtime < staleThresholdAgo) {
+        console.error(`WARNING: Result file is older than 2 minutes. After Effects may not be updating results.`);
         return JSON.stringify({ 
           warning: "Result file appears to be stale (not recently updated).",
           message: "This could indicate After Effects is not properly writing results or the MCP Bridge Auto panel isn't running.",

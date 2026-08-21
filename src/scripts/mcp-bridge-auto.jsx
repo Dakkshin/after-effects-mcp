@@ -1327,6 +1327,24 @@ function getCommandFilePath() {
     return bridgeFolder.fsName + "/ae_command.json";
 }
 
+// ExtendScript's JS engine (ES3) has no Date.prototype.toISOString, so build it manually.
+function toISOTimestamp(date) {
+    date = date || new Date();
+    function pad(n, width) {
+        n = String(n);
+        width = width || 2;
+        while (n.length < width) { n = "0" + n; }
+        return n;
+    }
+    return date.getUTCFullYear() + "-" +
+        pad(date.getUTCMonth() + 1) + "-" +
+        pad(date.getUTCDate()) + "T" +
+        pad(date.getUTCHours()) + ":" +
+        pad(date.getUTCMinutes()) + ":" +
+        pad(date.getUTCSeconds()) + "." +
+        pad(date.getUTCMilliseconds(), 3) + "Z";
+}
+
 // Result file path - use Documents folder for reliable access
 function getResultFilePath() {
     var userFolder = Folder.myDocuments;
@@ -1608,7 +1626,7 @@ function executeCommand(command, args) {
         try {
             var resultObj = JSON.parse(resultString);
             // Add a timestamp to help identify if we're getting fresh results
-            resultObj._responseTimestamp = new Date().toISOString();
+            resultObj._responseTimestamp = toISOTimestamp();
             resultObj._commandExecuted = command;
             resultString = JSON.stringify(resultObj, null, 2);
             logToPanel("Added timestamp to result JSON for tracking freshness.");
