@@ -792,6 +792,15 @@ function setLayerKeyframe(compIndex, layerIndex, propertyName, timeInSeconds, va
              property.setValueAtTime(comp.time, property.value); // Set initial keyframe if none exist
         }
 
+        // Some MCP clients send array/number values JSON-stringified (e.g.
+        // "[100, 200, 0]" instead of [100, 200, 0]); normalize defensively.
+        if (typeof value === "string") {
+            try {
+                value = JSON.parse(value);
+            } catch (parseErr) {
+                // Leave as-is; setValueAtTime below will report a clear error.
+            }
+        }
 
         property.setValueAtTime(timeInSeconds, value);
 
@@ -1037,7 +1046,7 @@ function applyEffectTemplate(args) {
                 }
             },
             "directional-blur": {
-                effectMatchName: "ADBE Directional Blur",
+                effectMatchName: "ADBE Motion Blur",
                 settings: {
                     "Direction": customSettings.direction || 0,
                     "Blur Length": customSettings.length || 10
@@ -1063,12 +1072,14 @@ function applyEffectTemplate(args) {
             },
             "curves": {
                 effectMatchName: "ADBE CurvesCustom",
-                // Curves are complex and would need special handling
+                // Curves are complex and would need special handling; settings
+                // must still be an object since it's iterated with for...in below.
+                settings: {}
             },
             
             // Stylistic effects
             "glow": {
-                effectMatchName: "ADBE Glow",
+                effectMatchName: "ADBE Glo2",
                 settings: {
                     "Glow Threshold": customSettings.threshold || 50,
                     "Glow Radius": customSettings.radius || 15,
@@ -1114,7 +1125,7 @@ function applyEffectTemplate(args) {
                         }
                     },
                     {
-                        effectMatchName: "ADBE Glow",
+                        effectMatchName: "ADBE Glo2",
                         settings: {
                             "Glow Threshold": 50,
                             "Glow Radius": 10,
@@ -1325,6 +1336,24 @@ function getCommandFilePath() {
         bridgeFolder.create();
     }
     return bridgeFolder.fsName + "/ae_command.json";
+}
+
+// ExtendScript's JS engine (ES3) has no Date.prototype.toISOString, so build it manually.
+function toISOTimestamp(date) {
+    date = date || new Date();
+    function pad(n, width) {
+        n = String(n);
+        width = width || 2;
+        while (n.length < width) { n = "0" + n; }
+        return n;
+    }
+    return date.getUTCFullYear() + "-" +
+        pad(date.getUTCMonth() + 1) + "-" +
+        pad(date.getUTCDate()) + "T" +
+        pad(date.getUTCHours()) + ":" +
+        pad(date.getUTCMinutes()) + ":" +
+        pad(date.getUTCSeconds()) + "." +
+        pad(date.getUTCMilliseconds(), 3) + "Z";
 }
 
 // Result file path - use Documents folder for reliable access
@@ -1608,7 +1637,7 @@ function executeCommand(command, args) {
         try {
             var resultObj = JSON.parse(resultString);
             // Add a timestamp to help identify if we're getting fresh results
-            resultObj._responseTimestamp = new Date().toISOString();
+            resultObj._responseTimestamp = toISOTimestamp();
             resultObj._commandExecuted = command;
             resultString = JSON.stringify(resultObj, null, 2);
             logToPanel("Added timestamp to result JSON for tracking freshness.");

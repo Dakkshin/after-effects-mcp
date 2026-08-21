@@ -91,11 +91,26 @@ try {
       execSync(`sudo cp "${sourceScript}" "${destinationScript}"`, { stdio: 'inherit' });
     }
   } else {
-    // Try to use PowerShell with elevated privileges on Windows
-    const command = `
-      Start-Process PowerShell -Verb RunAs -ArgumentList "-Command Copy-Item -Path '${sourceScript.replace(/\\/g, '\\\\')}' -Destination '${destinationScript.replace(/\\/g, '\\\\')}' -Force"
-    `;
-    execSync(`powershell -Command "${command}"`, { stdio: 'inherit' });
+    // On Windows, try a direct copy first (many installs allow this without
+    // elevation). Only fall back to an elevated PowerShell if that fails.
+    try {
+      fs.copyFileSync(sourceScript, destinationScript);
+    } catch {
+      // Start-Process -Verb RunAs launches asynchronously, so we must pass
+      // -Wait or this script would report success before the elevated copy
+      // has actually run. We also verify the file afterward since the user
+      // can dismiss the UAC prompt without it surfacing as an error here.
+      const command = `
+        Start-Process PowerShell -Verb RunAs -Wait -ArgumentList "-Command Copy-Item -Path '${sourceScript.replace(/\\/g, '\\\\')}' -Destination '${destinationScript.replace(/\\/g, '\\\\')}' -Force"
+      `;
+      execSync(`powershell -Command "${command}"`, { stdio: 'inherit' });
+
+      const copied = fs.existsSync(destinationScript) &&
+        fs.readFileSync(destinationScript, 'utf8') === fs.readFileSync(sourceScript, 'utf8');
+      if (!copied) {
+        throw new Error('Elevated copy did not complete (the UAC prompt may have been dismissed or denied).');
+      }
+    }
   }
 
   console.log('Bridge script installed successfully!');

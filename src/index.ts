@@ -51,10 +51,13 @@ function readResultsFromTempFile(): string {
       const content = fs.readFileSync(tempFilePath, 'utf8');
       console.error(`Result file content length: ${content.length} bytes`);
       
-      // If the result file is older than 30 seconds, warn the user
-      const thirtySecondsAgo = new Date(Date.now() - 30 * 1000);
-      if (stats.mtime < thirtySecondsAgo) {
-        console.error(`WARNING: Result file is older than 30 seconds. After Effects may not be updating results.`);
+      // If the result file is older than 2 minutes, warn the user. (30s was too
+      // aggressive for interactive/chat workflows, where a few seconds routinely
+      // pass between run-script and get-results, causing false "stale" warnings
+      // on perfectly fresh results.)
+      const staleThresholdAgo = new Date(Date.now() - 120 * 1000);
+      if (stats.mtime < staleThresholdAgo) {
+        console.error(`WARNING: Result file is older than 2 minutes. After Effects may not be updating results.`);
         return JSON.stringify({ 
           warning: "Result file appears to be stale (not recently updated).",
           message: "This could indicate After Effects is not properly writing results or the MCP Bridge Auto panel isn't running.",
@@ -439,9 +442,14 @@ const LayerIdentifierSchema = {
   layerIndex: z.number().int().positive().describe("1-based index of the target layer within the composition.")
 };
 
-// Zod schema for keyframe value (more specific types might be needed depending on property)
-// Using z.any() for flexibility, but can be refined (e.g., z.array(z.number()) for position/scale)
-const KeyframeValueSchema = z.unknown().describe("The value for the keyframe (e.g., [x,y] for Position, [w,h] for Scale, angle for Rotation, percentage for Opacity)");
+// Zod schema for keyframe value. z.unknown() previously produced a typeless JSON
+// schema property, which caused MCP clients to send array/number values as a
+// stringified fallback (e.g. "[100, 200, 0]" instead of [100, 200, 0]), breaking
+// every array-valued property (Position, Scale, ...). A concrete union type keeps
+// well-behaved clients honest; setLayerKeyframe on the AE side also defensively
+// re-parses a string value as a fallback.
+const KeyframeValueSchema = z.union([z.number(), z.array(z.number())])
+  .describe("The value for the keyframe (e.g., [x,y] for Position, [w,h] for Scale, angle for Rotation, percentage for Opacity)");
 
 // Tool for setting a layer keyframe
 server.tool(
@@ -842,7 +850,7 @@ These are internal names used by After Effects that can be used with the \`effec
 ### Blur & Sharpen
 - Gaussian Blur: "ADBE Gaussian Blur 2"
 - Camera Lens Blur: "ADBE Camera Lens Blur"
-- Directional Blur: "ADBE Directional Blur"
+- Directional Blur: "ADBE Motion Blur"
 - Radial Blur: "ADBE Radial Blur"
 - Smart Blur: "ADBE Smart Blur"
 - Unsharp Mask: "ADBE Unsharp Mask"
@@ -858,7 +866,7 @@ These are internal names used by After Effects that can be used with the \`effec
 - Vibrance: "ADBE Vibrance"
 
 ### Stylistic
-- Glow: "ADBE Glow"
+- Glow: "ADBE Glo2"
 - Drop Shadow: "ADBE Drop Shadow"
 - Bevel Alpha: "ADBE Bevel Alpha"
 - Noise: "ADBE Noise"
