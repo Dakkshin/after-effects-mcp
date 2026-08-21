@@ -1037,7 +1037,7 @@ function applyEffectTemplate(args) {
                 }
             },
             "directional-blur": {
-                effectMatchName: "ADBE Directional Blur",
+                effectMatchName: "ADBE Motion Blur",
                 settings: {
                     "Direction": customSettings.direction || 0,
                     "Blur Length": customSettings.length || 10
@@ -1063,12 +1063,14 @@ function applyEffectTemplate(args) {
             },
             "curves": {
                 effectMatchName: "ADBE CurvesCustom",
-                // Curves are complex and would need special handling
+                // Curves are complex and would need special handling; settings
+                // must still be an object since it's iterated with for...in below.
+                settings: {}
             },
             
             // Stylistic effects
             "glow": {
-                effectMatchName: "ADBE Glow",
+                effectMatchName: "ADBE Glo2",
                 settings: {
                     "Glow Threshold": customSettings.threshold || 50,
                     "Glow Radius": customSettings.radius || 15,
@@ -1114,7 +1116,7 @@ function applyEffectTemplate(args) {
                         }
                     },
                     {
-                        effectMatchName: "ADBE Glow",
+                        effectMatchName: "ADBE Glo2",
                         settings: {
                             "Glow Threshold": 50,
                             "Glow Radius": 10,
