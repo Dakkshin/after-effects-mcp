@@ -442,9 +442,14 @@ const LayerIdentifierSchema = {
   layerIndex: z.number().int().positive().describe("1-based index of the target layer within the composition.")
 };
 
-// Zod schema for keyframe value (more specific types might be needed depending on property)
-// Using z.any() for flexibility, but can be refined (e.g., z.array(z.number()) for position/scale)
-const KeyframeValueSchema = z.unknown().describe("The value for the keyframe (e.g., [x,y] for Position, [w,h] for Scale, angle for Rotation, percentage for Opacity)");
+// Zod schema for keyframe value. z.unknown() previously produced a typeless JSON
+// schema property, which caused MCP clients to send array/number values as a
+// stringified fallback (e.g. "[100, 200, 0]" instead of [100, 200, 0]), breaking
+// every array-valued property (Position, Scale, ...). A concrete union type keeps
+// well-behaved clients honest; setLayerKeyframe on the AE side also defensively
+// re-parses a string value as a fallback.
+const KeyframeValueSchema = z.union([z.number(), z.array(z.number())])
+  .describe("The value for the keyframe (e.g., [x,y] for Position, [w,h] for Scale, angle for Rotation, percentage for Opacity)");
 
 // Tool for setting a layer keyframe
 server.tool(

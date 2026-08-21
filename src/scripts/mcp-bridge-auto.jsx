@@ -792,6 +792,15 @@ function setLayerKeyframe(compIndex, layerIndex, propertyName, timeInSeconds, va
              property.setValueAtTime(comp.time, property.value); // Set initial keyframe if none exist
         }
 
+        // Some MCP clients send array/number values JSON-stringified (e.g.
+        // "[100, 200, 0]" instead of [100, 200, 0]); normalize defensively.
+        if (typeof value === "string") {
+            try {
+                value = JSON.parse(value);
+            } catch (parseErr) {
+                // Leave as-is; setValueAtTime below will report a clear error.
+            }
+        }
 
         property.setValueAtTime(timeInSeconds, value);
 
