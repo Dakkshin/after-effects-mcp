@@ -12,7 +12,26 @@
 
 // --- Function Definitions ---
 
-// --- createComposition (from createComposition.jsx) --- 
+// ExtendScript's JS engine (AE's scripting runtime) has no native
+// Date.prototype.toISOString — calling it throws "Function Date().toISOString
+// is undefined" and aborts whatever result-writing code called it. Build the
+// same YYYY-MM-DDTHH:mm:ss.sssZ format manually from the UTC getters instead.
+function toISOStringExtendScript(date) {
+    function pad(n, width) {
+        n = String(n);
+        while (n.length < (width || 2)) n = "0" + n;
+        return n;
+    }
+    return date.getUTCFullYear() + "-" +
+        pad(date.getUTCMonth() + 1) + "-" +
+        pad(date.getUTCDate()) + "T" +
+        pad(date.getUTCHours()) + ":" +
+        pad(date.getUTCMinutes()) + ":" +
+        pad(date.getUTCSeconds()) + "." +
+        pad(date.getUTCMilliseconds(), 3) + "Z";
+}
+
+// --- createComposition (from createComposition.jsx) ---
 function createComposition(args) {
     try {
         var name = args.name || "New Composition";
@@ -1608,7 +1627,7 @@ function executeCommand(command, args) {
         try {
             var resultObj = JSON.parse(resultString);
             // Add a timestamp to help identify if we're getting fresh results
-            resultObj._responseTimestamp = new Date().toISOString();
+            resultObj._responseTimestamp = toISOStringExtendScript(new Date());
             resultObj._commandExecuted = command;
             resultString = JSON.stringify(resultObj, null, 2);
             logToPanel("Added timestamp to result JSON for tracking freshness.");
