@@ -22,10 +22,15 @@ const SCRIPTS_DIR = path.join(__dirname, "scripts");
 const TEMP_DIR = path.join(__dirname, "temp");
 
 // Get the correct directory for AE bridge files
-// Use ~/Documents/ae-mcp-bridge for reliable cross-process access
+// Use the OS temp dir, NOT ~/Documents: on systems with OneDrive/iCloud "Known
+// Folder Move" enabled, the OS silently redirects the Documents special folder
+// to a cloud-synced path (e.g. ~/OneDrive/Documents). ExtendScript's
+// Folder.myDocuments resolves through that OS redirection, but os.homedir() +
+// 'Documents' here is a literal string join that does NOT — so the two sides
+// silently end up polling two different physical folders. The OS temp dir
+// isn't subject to that redirection on either platform.
 function getAETempDir(): string {
-  const homeDir = os.homedir();
-  const bridgeDir = path.join(homeDir, 'Documents', 'ae-mcp-bridge');
+  const bridgeDir = path.join(os.tmpdir(), 'ae-mcp-bridge');
   // Ensure the directory exists
   if (!fs.existsSync(bridgeDir)) {
     fs.mkdirSync(bridgeDir, { recursive: true });
@@ -190,7 +195,10 @@ server.tool(
       "setCompositionProperties",
       "duplicateLayer",
       "deleteLayer",
-      "setLayerMask"
+      "setLayerMask",
+      "importFootage",
+      "moveLayer",
+      "evalScript"
     ];
     
     if (!allowedScripts.includes(script)) {
