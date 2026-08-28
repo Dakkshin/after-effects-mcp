@@ -469,6 +469,49 @@ function createSolidLayer(args) {
     }
 }
 
+// --- importFootage --- (new: the bridge had no way to get external files into
+// the project at all — no image, audio, or video could be brought in through
+// MCP. Imports a file and, if compName is given, adds it as a layer.)
+function importFootage(args) {
+    try {
+        var filePath = args.filePath;
+        if (!filePath) { throw new Error("filePath is required"); }
+        var compName = args.compName || "";
+        var startTime = args.startTime || 0;
+        var file = new File(filePath);
+        if (!file.exists) { throw new Error("File does not exist: " + filePath); }
+
+        var importOptions = new ImportOptions(file);
+        var footageItem = app.project.importFile(importOptions);
+        if (args.name) { footageItem.name = args.name; }
+
+        var layerIndex = null;
+        if (compName) {
+            var comp = null;
+            for (var i = 1; i <= app.project.numItems; i++) {
+                var item = app.project.item(i);
+                if (item instanceof CompItem && item.name === compName) { comp = item; break; }
+            }
+            if (!comp) { throw new Error("No composition found with name '" + compName + "'"); }
+            var newLayer = comp.layers.add(footageItem);
+            newLayer.startTime = startTime;
+            layerIndex = newLayer.index;
+        }
+
+        return JSON.stringify({
+            status: "success", message: "Footage imported successfully",
+            footage: {
+                id: footageItem.id, name: footageItem.name,
+                width: footageItem.width, height: footageItem.height,
+                duration: footageItem.duration, hasAudio: !!footageItem.hasAudio
+            },
+            layerIndex: layerIndex
+        }, null, 2);
+    } catch (error) {
+        return JSON.stringify({ status: "error", message: error.toString() }, null, 2);
+    }
+}
+
 // --- setLayerProperties (modified to handle text properties) ---
 function setLayerProperties(args) {
     try {
@@ -1553,6 +1596,11 @@ function executeCommand(command, args) {
                 logToPanel("Calling createSolidLayer function...");
                 result = createSolidLayer(args);
                 logToPanel("Returned from createSolidLayer.");
+                break;
+            case "importFootage":
+                logToPanel("Calling importFootage function...");
+                result = importFootage(args);
+                logToPanel("Returned from importFootage.");
                 break;
             case "setLayerProperties":
                 logToPanel("Calling setLayerProperties function...");
