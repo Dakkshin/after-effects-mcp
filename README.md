@@ -58,6 +58,14 @@
 - **Apply expressions** to layer properties for dynamic animations
 - **Batch set properties** across multiple layers at once
 
+### 📁 Footage & Layer Ordering
+- **Import footage** (image, audio, or video) into the project and optionally add it directly as a layer
+- **Move layers** to the beginning or end of the layer stack
+- **Force resampling quality** (Bicubic vs. Bilinear) when scaling a layer
+
+### 🧰 Escape Hatch
+- **Run arbitrary ExtendScript** (`evalScript`) for anything outside the fixed set of bridge commands — covers the full After Effects scripting API without needing a new named function and a rebuild for every capability. Grants the same local script/file access as running an ExtendScript file directly in After Effects, so only expose it to trusted callers.
+
 ## ⚙️ Setup Instructions
 
 ### 🛠 Prerequisites
@@ -141,6 +149,20 @@ Go to your client (e.g., Claude or Cursor) and update your config file:
    - The panel will automatically check for commands every few seconds
    - Make sure the "Auto-run commands" checkbox is enabled
 
+### ⚠️ A note on modal dialogs
+
+The panel polls for commands using After Effects' own scheduled-task timer.
+After Effects' scripting engine refuses to run *any* scheduled script while
+*any* modal dialog is open anywhere in the app — including its own crash
+reporter, missing-plugin warnings, or other alert boxes — and will pop up an
+"Unable to execute script... Cannot run a script while a modal dialog is
+waiting for response" alert of its own when that happens. This is a
+restriction in After Effects' scripting engine, not something this bridge can
+suppress or catch. If commands stop being picked up, check for (and close)
+any open dialog in After Effects, including ones that may be hidden behind
+the main window; the panel resumes polling on its own once nothing is
+blocking it.
+
 ## 🚀 Usage Guide
 
 Once you have the server running and the MCP Bridge panel open in After Effects, you can control After Effects through the MCP protocol. This allows AI assistants or custom applications to send commands to After Effects.
@@ -215,6 +237,9 @@ You can animate layers with:
 | `duplicateLayer`            | Duplicate a layer                     |
 | `deleteLayer`               | Delete a layer                        |
 | `setLayerMask`              | Create/modify layer masks             |
+| `importFootage`             | Import a file and optionally add it as a layer |
+| `moveLayer`                 | Move a layer to the beginning or end of the stack |
+| `evalScript`                | Run an arbitrary ExtendScript snippet and return its result |
 
 ## 👨‍💻 For Developers
 

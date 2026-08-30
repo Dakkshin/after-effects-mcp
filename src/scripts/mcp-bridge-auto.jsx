@@ -512,15 +512,13 @@ function importFootage(args) {
     }
 }
 
-// --- evalScript --- (new: generic escape hatch. The bridge only exposed a
-// fixed, hand-written list of AE operations, so any capability outside that
-// list needed a new named function, a rebuild, an elevated redeploy, and a
-// panel reopen before it could be used — for the After Effects object model,
-// which is enormous, that's an unworkable cycle. This runs any raw
-// ExtendScript snippet passed in and returns its result, covering the entire
-// API without further redeploys. User explicitly approved this as a standing
-// capability, aware it grants full local file/script access equivalent to
-// the Bash access already available in this environment.)
+// --- evalScript --- (generic escape hatch: runs an arbitrary ExtendScript
+// snippet and returns its result. The bridge otherwise only exposes a fixed,
+// hand-written list of AE operations, so any capability outside that list
+// needs a new named function, a rebuild, and a panel reopen before it can be
+// used — unworkable against an object model as large as AE's. This grants
+// full local script/file access equivalent to running an ExtendScript file
+// directly in After Effects; expose it only to trusted callers.)
 function evalScript(args) {
     var raw;
     try {
@@ -1462,8 +1460,11 @@ if (isAE2025OrLater) {
 var autoRunCheckbox = panel.add("checkbox", undefined, "Auto-run commands");
 autoRunCheckbox.value = true;
 
-// Check interval (ms)
-var checkInterval = 2000;
+// Check interval (ms) — kept fairly slow on purpose: AE's engine refuses to run
+// ANY scheduled script while a modal dialog is open anywhere, and throws its own
+// "Unable to execute script" alert when the timer collides with one. A longer
+// interval reduces how often a lingering dialog (crash reporter, etc.) gets hit.
+var checkInterval = 5000;
 var isChecking = false;
 
 // Command file path - use the OS temp folder, NOT Documents: on systems with
@@ -1913,9 +1914,15 @@ function checkForCommands() {
     isChecking = false;
 }
 
-// Set up timer to check for commands
+// Set up timer to check for commands. Self-rescheduling one-shot rather than
+// app.scheduleTask's own repeat:true — AE's engine refuses to run ANY
+// scheduled script while a modal dialog is open anywhere (throws its own
+// "Unable to execute script" alert, which is itself a new hidden modal), and
+// it's unconfirmed whether the built-in repeating timer keeps retrying
+// cleanly after a failed tick or stops silently. Re-arming explicitly from
+// inside each successful tick removes that uncertainty either way.
 function startCommandChecker() {
-    app.scheduleTask("checkForCommands()", checkInterval, true);
+    app.scheduleTask("checkForCommands(); startCommandChecker();", checkInterval, false);
 }
 
 // Add manual check button
