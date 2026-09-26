@@ -499,6 +499,13 @@ function setLayerProperties(args) {
         var textProp = null;
         var textDocument = null;
 
+        // --- Rename ---
+        var newName = args.newName;
+        if (newName !== undefined && newName !== null && newName !== "") {
+            layer.name = newName;
+            changedProperties.push("name");
+        }
+
         // --- Text Property Handling ---
         if (layer instanceof TextLayer && (textContent !== undefined || fontFamily !== undefined || fontSize !== undefined || fillColor !== undefined)) {
             var sourceTextProp = layer.property("Source Text");
