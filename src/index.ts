@@ -1004,6 +1004,12 @@ server.tool(
       if (!path.isAbsolute(filePath)) {
         return footageToolError("INVALID_ARGS", `filePath must be an absolute path: ${filePath}`);
       }
+      if (filePath.startsWith("\\\\") || filePath.startsWith("//")) {
+        return footageToolError("INVALID_ARGS", `Network (UNC) paths are not supported: ${filePath}`);
+      }
+      if (process.platform === "win32" && !/^[A-Za-z]:[\\/]/.test(filePath)) {
+        return footageToolError("INVALID_ARGS", `filePath must be an absolute path: ${filePath}`);
+      }
       if (!fs.existsSync(filePath)) {
         return footageToolError("FILE_NOT_FOUND", `File not found: ${filePath}`);
       }

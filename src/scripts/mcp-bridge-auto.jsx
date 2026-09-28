@@ -1794,6 +1794,9 @@ function importFootage(args) {
         if (hasFolder && (typeof folderName !== "string" || folderName === "")) {
             return JSON.stringify(_mcpError("INVALID_ARGS", "folderName must be a non-empty string when provided"), null, 2);
         }
+        if (!/^([A-Za-z]:[\\\/]|\/|~\/)/.test(filePath) || filePath.substring(0, 2) === "\\\\" || filePath.substring(0, 2) === "//") {
+            return JSON.stringify(_mcpError("INVALID_ARGS", "filePath must be an absolute local path: " + filePath), null, 2);
+        }
         f = new File(filePath);
         if (!f.exists) {
             return JSON.stringify(_mcpError("FILE_NOT_FOUND", "File not found: " + filePath), null, 2);
@@ -1869,8 +1872,8 @@ function importFootage(args) {
         };
         committed = true;
 
-        app.endUndoGroup();
         undoOpen = false;
+        try { app.endUndoGroup(); } catch (eEndUndo) {}
         return JSON.stringify(result, null, 2);
     } catch (e) {
         if (item && !committed) {
@@ -1960,8 +1963,19 @@ function addFootageLayer(args) {
             }
         }
         if (hasPosition) {
+            positionProp = null;
             if (footage.hasVideo && transformGroup) {
-                transformGroup.property("ADBE Position").setValue(position);
+                try {
+                    positionProp = transformGroup.property("ADBE Position");
+                } catch (ePosLookup) {
+                    positionProp = null;
+                }
+            }
+            if (positionProp) {
+                positionProp.setValue(position);
+            } else if (footage.hasVideo) {
+                warnings.push({ code: "POSITION_NOT_SET",
+                    message: "position was not set because the layer's Position property could not be found" });
             } else {
                 warnings.push({ code: "POSITION_IGNORED_AUDIO_ONLY",
                     message: "position was ignored because the footage has no video (audio-only layer)" });
@@ -2025,8 +2039,8 @@ function addFootageLayer(args) {
         }
         committed = true;
 
-        app.endUndoGroup();
         undoOpen = false;
+        try { app.endUndoGroup(); } catch (eEndUndo) {}
         return JSON.stringify(result, null, 2);
     } catch (e) {
         if (layer && !committed) {
@@ -2542,8 +2556,12 @@ function executeCommand(command, args) {
         try {
             var resultObj = JSON.parse(resultString);
             // Add a timestamp to help identify if we're getting fresh results
-            resultObj._responseTimestamp = new Date().toISOString();
             resultObj._commandExecuted = command;
+            try {
+                resultObj._responseTimestamp = new Date().toISOString();
+            } catch (eTs) {
+                resultObj._responseTimestamp = String(new Date().getTime());
+            }
             resultString = JSON.stringify(resultObj, null, 2);
             logToPanel("Added timestamp to result JSON for tracking freshness.");
         } catch (parseError) {
@@ -2622,6 +2640,7 @@ function updateCommandStatus(status) {
     try {
         var commandFile = new File(getCommandFilePath());
         if (commandFile.exists) {
+            commandFile.encoding = "UTF-8";
             commandFile.open("r");
             var content = commandFile.read();
             commandFile.close();
@@ -2630,6 +2649,7 @@ function updateCommandStatus(status) {
                 var commandData = JSON.parse(content);
                 commandData.status = status;
                 
+                commandFile.encoding = "UTF-8";
                 commandFile.open("w");
                 commandFile.write(JSON.stringify(commandData, null, 2));
                 commandFile.close();
@@ -2655,6 +2675,7 @@ function checkForCommands() {
     try {
         var commandFile = new File(getCommandFilePath());
         if (commandFile.exists) {
+            commandFile.encoding = "UTF-8";
             commandFile.open("r");
             var content = commandFile.read();
             commandFile.close();

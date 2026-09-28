@@ -58,7 +58,8 @@ In `mcp-bridge-auto.jsx`, after the closing `}` of `bridgeTestEffects` (~line 12
 | `undefined` / `null` | `{ ok: false, reason: "missing" }` |
 | `typeof value === "number"` and `isFinite(value)` | `{ ok: true, value: value }` |
 | number that is NaN/±Infinity | `{ ok: false, reason: "invalid" }` |
-| string matching `/^\s*[+-]?(\d+(\.\d*)?\|\.\d+)([eE][+-]?\d+)?\s*$/` | `{ ok: true, value: parseFloat(value) }` |
+| string matching `/^\s*[+-]?(\d+(\.\d*)?\|\.\d+)([eE][+-]?\d+)?\s*$/` whose `parseFloat` is finite | `{ ok: true, value: parseFloat(value) }` |
+| numeric string that overflows to ±Infinity (e.g. `"1e999"`) | `{ ok: false, reason: "invalid" }` |
 | any other string (`""`, `"abc"`, `"1.5s"`, `"0x10"`, `"Infinity"`) | `{ ok: false, reason: "invalid" }` |
 | boolean, object, array, function | `{ ok: false, reason: "invalid" }` |
 
@@ -177,7 +178,7 @@ Implements user decision 2 as testable pure logic.
 - `keyframes`: the `.keyframes` output of `validateTimeRemapKeyframes` (valid, sorted).
 - `remapWasEnabled`: boolean — state **before** the command.
 
-Invalid input: `existingKeyTimes` or `keyframes` not an array → `INVALID_INPUT` with that field name; `remapWasEnabled` not boolean → `INVALID_INPUT`, field `"remapWasEnabled"`. Error shape as §4 (`index: null`).
+Invalid input: `existingKeyTimes` or `keyframes` not an array → `INVALID_INPUT` with that field name; a non-finite entry in `existingKeyTimes` or a malformed keyframe object → `INVALID_INPUT` with that field name (defensive; unreachable when fed by §4); `remapWasEnabled` not boolean → `INVALID_INPUT`, field `"remapWasEnabled"`. Error shape as §4 (`index: null`).
 
 Algorithm:
 1. For each key `k` (in order), find the **unclaimed** existing time `e` minimising `|e - k.t|` with `|e - k.t| < EPS` (ties → earliest position in `existingKeyTimes`). If found: claim it, `time = e`, `replacedCount++`. Else `time = k.t`, `addedCount++`.
@@ -321,6 +322,7 @@ Validation order:
 |---|---|---|---|
 | 1 | `filePath` non-empty string | `INVALID_ARGS` | `filePath must be a non-empty string` |
 | 2 | `folderName` (if not undefined/null) non-empty string | `INVALID_ARGS` | `folderName must be a non-empty string when provided` |
+| 2a | `filePath` is absolute (`/^([A-Za-z]:[\\\/]\|\/\|~\/)/`) and not UNC (does not start with `\\` or `//`) — checked before any `File`/AE call | `INVALID_ARGS` | `filePath must be an absolute local path: <filePath>` |
 | 3 | `f = new File(filePath)`; `!f.exists` | `FILE_NOT_FOUND` | `File not found: <filePath>` |
 | 4 | `f instanceof Folder` | `NOT_A_FILE` | `Path is a folder, not a file: <filePath>` |
 | 5 | `io = new ImportOptions(f)` (in try); throws or `!io.canImportAs(ImportAsType.FOOTAGE)` | `CANNOT_IMPORT` | `After Effects cannot import this file as footage: <filePath>` (+ exception text if thrown) |
@@ -376,7 +378,7 @@ Implementation (inside undo group):
 1. `layer = comp.layers.add(footage)`.
 2. `layer.startTime = p.startTime`.
 3. If `p.inPoint >= layer.outPoint`: set `layer.outPoint = p.outPoint` then `layer.inPoint = p.inPoint`; else `layer.inPoint = p.inPoint` then `layer.outPoint = p.outPoint`. (Guards stills whose default length is shorter than the requested in-point.)
-4. `position`: if `footage.hasVideo` and `layer.property("ADBE Transform Group")` exists → `.property("ADBE Position").setValue(position)`; otherwise warning `POSITION_IGNORED_AUDIO_ONLY`.
+4. `position`: if `footage.hasVideo` and `layer.property("ADBE Transform Group")` exists → `.property("ADBE Position").setValue(position)`; if `!footage.hasVideo` → warning `POSITION_IGNORED_AUDIO_ONLY`; if `hasVideo` but the Transform/Position lookup fails → warning `POSITION_NOT_SET`. The reported `layer.position` is the value read back from AE (`[x, y, z]`), or `null` when there is no Transform group.
 5. Read back `layer.startTime/inPoint/outPoint`; if any differs from `p` by more than `EPS` → warning `AE_ADJUSTED_TIMES` (message lists computed vs actual).
 6. On any throw after step 1: `try { layer.remove(); } catch (e) {}`.
 
@@ -424,7 +426,13 @@ Success JSON:
 
 ### 7.5 Code catalogue
 Commands: `INVALID_ARGS`, `COMP_NOT_FOUND`, `NOT_A_COMP`, `LAYER_NOT_FOUND`, `FOOTAGE_NOT_FOUND`, `NOT_FOOTAGE`, `AMBIGUOUS_FOOTAGE_NAME`, `FILE_NOT_FOUND`, `NOT_A_FILE`, `CANNOT_IMPORT`, `NO_FOOTAGE_SOURCE`, `TIME_REMAP_NOT_SUPPORTED`, `AE_ERROR`, plus pure codes (§3.5, §4).
-Warnings: `IN_BEFORE_COMP_START`, `OUT_BEYOND_COMP_END`, `POSITION_IGNORED_AUDIO_ONLY`, `AE_ADJUSTED_TIMES`, `KEY_OUTSIDE_LAYER_RANGE`.
+Warnings: `IN_BEFORE_COMP_START`, `OUT_BEYOND_COMP_END`, `POSITION_IGNORED_AUDIO_ONLY`, `POSITION_NOT_SET`, `AE_ADJUSTED_TIMES`, `KEY_OUTSIDE_LAYER_RANGE`.
+Error JSON omits `field` / `index` when they are null. The "partially applied" suffix of §7.4 step 9 is appended only when the failure occurs after the undo group was opened.
+
+### 7.6 Bridge plumbing changes (review round 1)
+- `checkForCommands` / `updateCommandStatus` set `encoding = "UTF-8"` on the command file before every `open()` (Node writes UTF-8 without BOM; non-ASCII paths were garbled under the ANSI codepage).
+- `executeCommand` sets `_commandExecuted` **before** `_responseTimestamp`; the timestamp uses `toISOString()` inside try/catch with a `getTime()` fallback.
+- The final `app.endUndoGroup()` on the success path is wrapped in its own try/catch.
 
 ---
 
@@ -503,6 +511,8 @@ server.tool(
   },
   async ({ filePath, folderName }) => {
     // 1. !path.isAbsolute(filePath)        -> footageToolError("INVALID_ARGS", `filePath must be an absolute path: ${filePath}`)
+    // 1a. starts with "\\\\" or "//"         -> footageToolError("INVALID_ARGS", `Network (UNC) paths are not supported: ${filePath}`)
+    // 1b. win32 && !/^[A-Za-z]:[\\/]/        -> INVALID_ARGS (drive-relative paths such as "\foo")
     // 2. !fs.existsSync(filePath)          -> footageToolError("FILE_NOT_FOUND", `File not found: ${filePath}`)
     // 3. !fs.statSync(filePath).isFile()   -> footageToolError("NOT_A_FILE", `Path is not a regular file: ${filePath}`)
     // 4. args = { filePath: path.resolve(filePath) } plus folderName only if defined
