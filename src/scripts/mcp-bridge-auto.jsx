@@ -2154,8 +2154,8 @@ function setLayerTimeRemap(args) {
             result.warning = _mcpJoinWarnings(warnings);
         }
 
-        app.endUndoGroup();
         undoOpen = false;
+        try { app.endUndoGroup(); } catch (eEndUndo) {}
         return JSON.stringify(result, null, 2);
     } catch (e) {
         var partial = undoOpen;
