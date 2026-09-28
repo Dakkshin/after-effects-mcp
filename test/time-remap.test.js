@@ -159,6 +159,11 @@ const T = [
     { times: [5], values: [5], removeTimes: [], replaced: 0, added: 1 }],
   ["TX5 removeTimes keep existingKeyTimes order", [9.966, 0, 4], kfs([4, 1]), false,
     { times: [4], values: [1], removeTimes: [9.966, 0], replaced: 1, added: 0 }],
+  // Defensive input checks added in review round 1 (§5).
+  ["TX6 non-finite existing time (NaN)", [0, NaN], kfs([1, 1]), false, { code: "INVALID_INPUT", field: "existingKeyTimes" }],
+  ["TX7 non-finite existing time (Infinity)", [Infinity], kfs([1, 1]), true, { code: "INVALID_INPUT", field: "existingKeyTimes" }],
+  ["TX8 malformed keyframe (null)", [0], [null], false, { code: "INVALID_INPUT", field: "keyframes" }],
+  ["TX9 malformed keyframe (NaN time)", [0], [kf(NaN, 0)], false, { code: "INVALID_INPUT", field: "keyframes" }],
 ];
 
 describe("planTimeRemapKeyframes — §6.3 T1–T8 (+ extras)", () => {

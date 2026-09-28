@@ -14,7 +14,7 @@ Automated coverage (no AE needed) is `npm test`; this checklist covers what only
 |---|------|------|
 | 0.1 | `npm install` (runs the build) or `npm run build`. Confirm `build/index.js` and `build/scripts/mcp-bridge-auto.jsx` are fresh. | ☐ |
 | 0.2 | `npm test` passes (AC5). | ☐ |
-| 0.3 | `node test/fixtures/generate-fixtures.js` creates `test/fixtures/media/` with `clip_10s.mp4`, `clip_2997.mp4`, `tone_5s.wav`, `still.png` (needs ffmpeg on PATH). | ☐ |
+| 0.3 | `node test/fixtures/generate-fixtures.js` creates `test/fixtures/media/` with `clip_10s.mp4`, `clip_2997.mp4`, `tone_5s.wav`, `still.png` and `кадр.png` (a copy of `still.png` with a Cyrillic name) (needs ffmpeg on PATH). | ☐ |
 | 0.4 | Copy `build/scripts/mcp-bridge-auto.jsx` into the AE ScriptUI Panels folder (or run `npm run install-bridge`). Windows: `C:\Program Files\Adobe\Adobe After Effects <version>\Support Files\Scripts\ScriptUI Panels\`. macOS: `/Applications/Adobe After Effects <version>/Scripts/ScriptUI Panels/`. Overwrite any older copy. | ☐ |
 | 0.5 | AE: *Edit > Preferences > Scripting & Expressions* → enable **Allow Scripts to Write Files and Access Network**. | ☐ |
 | 0.6 | Restart AE, open a **new empty project**, open *Window > mcp-bridge-auto.jsx*, tick **Auto-run commands**. | ☐ |
@@ -50,6 +50,7 @@ Notation used below:
 | 2.4 | `importFootage {"filePath":"<FX>/clip_2997.mp4","folderName":"Video"}` | `footage.frameRate≈29.97`, `duration≈6.006` (180 frames), `hasAudio:false`; `folder:{name:"Video",created:true}`. Record `ID_2997`. |
 | 2.5 | `importFootage {"filePath":"<FX>/clip_10s.mp4","folderName":"Video"}` (same file again) | New item (id ≠ `ID_CLIP`) — no de-duplication; `alreadyInProject:true`; `existingItemIds` contains `ID_CLIP`; `folder.created:false` (reuses "Video"). Record `ID_CLIP2`. Project now has two items named `clip_10s.mp4`. |
 | 2.6 | Path case (Windows only): `importFootage` with the same path in different letter case, e.g. `"<FX>/CLIP_10S.MP4"` | `alreadyInProject:true`, `existingItemIds` contains `ID_CLIP` and `ID_CLIP2`. (Optional; afterwards delete this extra item manually or leave it.) |
+| 2.7 | Non-ASCII file name: `importFootage {"filePath":"<FX>/кадр.png","folderName":"Кадры"}` | `status:"success"`; `footage.name:"кадр.png"`; `footage.filePath` ends with `кадр.png` (not mojibake such as `ÐºÐ°Ð´Ñ€`); `folder.name:"Кадры"`, `created:true`; the Project panel shows both names correctly. Verifies the UTF-8 command/result file encoding (spec §7.6). |
 
 ---
 
@@ -98,6 +99,9 @@ their result with `get-results`.
 | 5.1 | `importFootage {"filePath":"<FX>/missing.mp4"}` | Node: `FILE_NOT_FOUND` |
 | 5.2 | `importFootage {"filePath":"clip_10s.mp4"}` (relative) | Node: `INVALID_ARGS` |
 | 5.3 | `importFootage {"filePath":"<FX>"}` (a folder) | Node: `NOT_A_FILE` |
+| 5.3a | `importFootage {"filePath":"\\\\server\\share\\clip.mp4"}` (UNC, i.e. `\\server\share\clip.mp4`) and `{"filePath":"//server/share/clip.mp4"}` | Node: `INVALID_ARGS` (network paths not supported) |
+| 5.3b | Windows: `importFootage {"filePath":"\\media\\clip.mp4"}` (drive-relative, i.e. `\media\clip.mp4`) | Node: `INVALID_ARGS` |
+| 5.3c | `run-script {"script":"importFootage","parameters":{"filePath":"clip_10s.mp4"}}` → `get-results`; repeat with `"\\\\server\\share\\clip.mp4"` | jsx: `INVALID_ARGS` (`filePath must be an absolute local path`), no import, no undo entry |
 | 5.4 | `run-script {"script":"importFootage","parameters":{"filePath":"<FX>/missing.mp4"}}` → `get-results` | jsx: `FILE_NOT_FOUND` |
 | 5.5 | `run-script {"script":"importFootage","parameters":{"filePath":"<FX>/still.png","folderName":""}}` → `get-results` | jsx: `INVALID_ARGS` (folderName) |
 | 5.6 | `addFootageLayer {"compIndex":999,"footageId":ID_CLIP,"compStartTime":0}` | `COMP_NOT_FOUND` |
@@ -145,6 +149,7 @@ Tester: ____________  Date: __________  AE version: __________  OS: __________  
 | 2.4 import 29.97 mp4 | AC1 | | |
 | 2.5 re-import (alreadyInProject) | AC1 | | |
 | 2.6 path case (Windows) | AC1 | | |
+| 2.7 non-ASCII (Cyrillic) file name | AC1 | | |
 | 3.1 trimmed range 2–5 s at 1 s | AC2 | | |
 | 3.1a burn-in 00:02 at comp 1 s | AC2 | | |
 | 3.1b AE In/Out/Start match | AC2 | | |
@@ -160,7 +165,8 @@ Tester: ____________  Date: __________  AE version: __________  OS: __________  
 | 4.2a Graph Editor curve / burn-in | AC3 | | |
 | 4.3 merge (replace + add) | AC3 | | |
 | 4.4 key outside layer range + undo | AC3 | | |
-| 5.1–5.3 import Node errors | AC4 | | |
+| 5.1–5.3b import Node errors (incl. UNC / relative) | AC4 | | |
+| 5.3c relative / UNC via run-script (jsx) | AC4 | | |
 | 5.4–5.5 import jsx errors | AC4 | | |
 | 5.6–5.8 bad compIndex | AC4 | | |
 | 5.9–5.11 bad footageId / selector | AC4 | | |

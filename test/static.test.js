@@ -242,3 +242,86 @@ describe("line endings (CRLF preserved)", () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------------------------
+// Review round 1 additions
+// ---------------------------------------------------------------------------------------------
+
+/** Text between the pure-end marker and the JSON polyfill comment (private helpers + 3 commands). */
+function getCommandRegion() {
+  const e = findMarkerLines(jsxLines, MARKER_END);
+  const poly = jsxLines.findIndex((l) => l.includes("// JSON polyfill for ExtendScript"));
+  assert.equal(e.length, 1, "pure-end marker missing");
+  assert.ok(poly > e[0], "JSON polyfill comment must follow the pure block");
+  return jsxLines.slice(e[0] + 1, poly).join("\n");
+}
+
+/** Body text of a top-level `function name(` up to the next top-level function. */
+function getFunctionText(name) {
+  const start = jsxLines.findIndex((l) => l.startsWith(`function ${name}(`));
+  assert.ok(start >= 0, `function ${name} not found`);
+  let end = jsxLines.findIndex((l, i) => i > start && /^function\s/.test(l));
+  if (end < 0) end = jsxLines.length;
+  return jsxLines.slice(start, end).join("\n");
+}
+
+describe("command region (pure-end → JSON polyfill) — ES3 lint (§7.1)", () => {
+  // Same list as the pure block, except: JSON (commands must call JSON.stringify), AE globals and
+  // `throw` (commands talk to AE and use try/catch), and `instanceof Array` (same-realm in AE).
+  test("no ES6+ syntax or non-ES3 built-ins", () => {
+    const code = stripStringsAndComments(getCommandRegion());
+    const forbidden = [
+      ["=>", /=>/], ["let ", /\blet\s/], ["const ", /\bconst\s/], ["` (template literal)", /`/],
+      [".forEach(", /\.forEach\s*\(/], [".map(", /\.map\s*\(/], [".filter(", /\.filter\s*\(/],
+      [".reduce(", /\.reduce\s*\(/], [".some(", /\.some\s*\(/], [".every(", /\.every\s*\(/],
+      [".indexOf(", /\.indexOf\s*\(/], [".trim(", /\.trim\s*\(/], ["Array.isArray", /\bArray\.isArray\b/],
+      ["Number.isFinite", /\bNumber\.isFinite\b/], ["Number.isNaN", /\bNumber\.isNaN\b/],
+      ["Object.keys", /\bObject\.keys\b/], ["Object.create", /\bObject\.create\b/], ["Date.now", /\bDate\.now\b/],
+    ];
+    for (const [name, re] of forbidden) assert.ok(!re.test(code), `forbidden construct ${name} found in command region`);
+  });
+
+  test("no trailing commas in array/object literals", () => {
+    const code = stripStringsAndComments(getCommandRegion());
+    const m = code.match(/.{0,40},\s*[\]}]/);
+    assert.ok(!m, `trailing comma found near: ${m && m[0]}`);
+  });
+
+  test("no getters/setters", () => {
+    const code = stripStringsAndComments(getCommandRegion());
+    assert.ok(!/\b(get|set)\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{/.test(code), "getter/setter syntax found");
+  });
+});
+
+describe("bridge plumbing (§7.6)", () => {
+  test("executeCommand sets _commandExecuted before _responseTimestamp", () => {
+    const body = getFunctionText("executeCommand");
+    const iCmd = body.search(/\._commandExecuted\s*=\s*command\b/);
+    const iTs = body.search(/\._responseTimestamp\s*=/);
+    assert.ok(iCmd >= 0, "_commandExecuted = command not found in executeCommand");
+    assert.ok(iTs >= 0, "_responseTimestamp assignment not found in executeCommand");
+    assert.ok(iCmd < iTs, "_commandExecuted must be assigned before _responseTimestamp");
+  });
+
+  for (const fn of ["checkForCommands", "updateCommandStatus"]) {
+    test(`${fn} sets encoding = "UTF-8" on the command file before every open()`, () => {
+      const body = stripStringsAndComments(getFunctionText(fn).replace(/"UTF-8"/g, "UTF8TOKEN"));
+      const encRe = /\.encoding\s*=\s*UTF8TOKEN/g;
+      assert.ok(encRe.test(body), `${fn} must set .encoding = "UTF-8"`);
+      // Every .open( must be preceded (since the previous open) by an encoding assignment.
+      const events = [];
+      for (const m of body.matchAll(/\.encoding\s*=\s*UTF8TOKEN|\.open\s*\(/g)) events.push(m[0].startsWith(".open") ? "open" : "enc");
+      let armed = false;
+      let opens = 0;
+      for (const ev of events) {
+        if (ev === "enc") armed = true;
+        else {
+          opens++;
+          assert.ok(armed, `${fn}: open() #${opens} is not preceded by encoding = "UTF-8"`);
+          armed = false;
+        }
+      }
+      assert.ok(opens > 0, `${fn}: no open() found`);
+    });
+  }
+});

@@ -31,6 +31,7 @@ let stderrBuf = "";
 const fakeBridge = {
   timer: null,
   received: [],
+  receivedRaw: [],
   responder: null,
   start(responder) {
     this.stop();
@@ -43,14 +44,17 @@ const fakeBridge = {
   },
   poll() {
     let cmd;
+    let bytes;
     try {
       if (!fs.existsSync(commandFile)) return;
-      cmd = JSON.parse(fs.readFileSync(commandFile, "utf8"));
+      bytes = fs.readFileSync(commandFile);
+      cmd = JSON.parse(bytes.toString("utf8"));
     } catch {
       return; // partially written; try again next tick
     }
     if (!cmd || cmd.status !== "pending") return;
     this.received.push(cmd);
+    this.receivedRaw.push(bytes);
     const canned = this.responder(cmd);
     const result = { ...canned, _commandExecuted: cmd.command, _responseTimestamp: new Date().toISOString() };
     try {
@@ -187,6 +191,7 @@ after(async () => {
 beforeEach(() => {
   fakeBridge.stop();
   fakeBridge.received = [];
+  fakeBridge.receivedRaw = [];
   removeBridgeFiles();
 });
 
@@ -233,6 +238,38 @@ describe("MCP footage tools (fake bridge)", { timeout: 120000 }, () => {
   test("importFootage: directory → NOT_A_FILE, no command written", { timeout: TEST_TIMEOUT_MS }, async () => {
     fakeBridge.start(cannedSuccess);
     await expectNodeSideError("importFootage", { filePath: tmpHome }, "NOT_A_FILE");
+  });
+
+  test("importFootage: UNC path (backslashes) → INVALID_ARGS, no command written", { timeout: TEST_TIMEOUT_MS }, async () => {
+    fakeBridge.start(cannedSuccess);
+    await expectNodeSideError("importFootage", { filePath: "\\\\server\\share\\clip.mp4" }, "INVALID_ARGS");
+  });
+
+  test("importFootage: UNC path (forward slashes) → INVALID_ARGS, no command written", { timeout: TEST_TIMEOUT_MS }, async () => {
+    fakeBridge.start(cannedSuccess);
+    await expectNodeSideError("importFootage", { filePath: "//server/share/clip.mp4" }, "INVALID_ARGS");
+  });
+
+  test("importFootage: drive-relative path \\foo → INVALID_ARGS on win32", {
+    timeout: TEST_TIMEOUT_MS,
+    skip: process.platform !== "win32" ? "win32-only rule" : false,
+  }, async () => {
+    fakeBridge.start(cannedSuccess);
+    await expectNodeSideError("importFootage", { filePath: "\\foo\\clip.mp4" }, "INVALID_ARGS");
+    await expectNodeSideError("importFootage", { filePath: "/foo/clip.mp4" }, "INVALID_ARGS");
+  });
+
+  test("importFootage: non-ASCII (Cyrillic) file name is forwarded intact", { timeout: TEST_TIMEOUT_MS }, async () => {
+    const file = path.join(tmpHome, "кадр.png");
+    fs.writeFileSync(file, "png");
+    fakeBridge.start(cannedSuccess);
+    const res = await call("importFootage", { filePath: file });
+    assert.ok(!res.isError, textOf(res));
+    assert.equal(fakeBridge.received[0].args.filePath, path.resolve(file));
+    // The command file must be UTF-8 without BOM (ExtendScript reads it with encoding = "UTF-8").
+    const bytes = fakeBridge.receivedRaw[0];
+    assert.ok(!(bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf), "command file must not start with a BOM");
+    assert.ok(bytes.includes(Buffer.from("кадр.png", "utf8")), "file name must be UTF-8 encoded in the command file");
   });
 
   test("importFootage: valid file → forwarded with resolved path; bridge result returned verbatim", { timeout: TEST_TIMEOUT_MS }, async () => {

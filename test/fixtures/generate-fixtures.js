@@ -8,6 +8,7 @@
 //   clip_2997.mp4  1920x1080, 29.97 fps (30000/1001), 6 s, H.264, video only, burned-in timecode
 //   tone_5s.wav    5 s, 1 kHz sine, 48 kHz 16-bit PCM
 //   still.png      1920x1080 single frame
+//   кадр.png       copy of still.png with a non-ASCII (Cyrillic) name, for the UTF-8 path check
 //
 // Requires ffmpeg (and ffprobe for verification) on PATH. Existing files are kept unless --force.
 
@@ -19,6 +20,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outDir = path.join(here, "media");
 const force = process.argv.includes("--force");
+const NON_ASCII_NAME = "кадр.png"; // "кадр.png" (escaped so the source stays ASCII-safe)
 
 function which(cmd) {
   const r = spawnSync(cmd, ["-version"], { encoding: "utf8" });
@@ -137,6 +139,16 @@ function main() {
     run(job.args(out), job.name);
     console.log(`wrote  ${job.name}`);
   }
+
+  // Non-ASCII file name for the UTF-8 command-file check in the smoke test.
+  const cyr = path.join(outDir, NON_ASCII_NAME);
+  if (force || !fs.existsSync(cyr)) {
+    fs.copyFileSync(path.join(outDir, "still.png"), cyr);
+    console.log(`wrote  ${NON_ASCII_NAME}`);
+  } else {
+    console.log(`skip   ${NON_ASCII_NAME} (exists; use --force to regenerate)`);
+  }
+  jobs.push({ name: NON_ASCII_NAME });
 
   console.log(`\nFixtures in ${outDir}:`);
   for (const job of jobs) {

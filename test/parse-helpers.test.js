@@ -60,6 +60,8 @@ const NUMERIC = [
   ["1.5s", INVALID],
   ["0x10", INVALID],
   ["Infinity", INVALID],
+  ["1e999", INVALID], // overflows to Infinity (spec §2, review round 1)
+  ["-1e999", INVALID],
   ["-Infinity", INVALID],
   ["NaN", INVALID],
   ["1,5", INVALID],
