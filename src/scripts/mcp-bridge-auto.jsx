@@ -1234,6 +1234,939 @@ function bridgeTestEffects(args) {
     }
 }
 
+// --- Footage commands: pure timing logic (no AE API; unit-tested outside AE) ---
+// PURE-BLOCK-BEGIN footage-timing
+var FOOTAGE_TIMING_EPSILON = 0.001;
+var STILL_DEFAULT_DURATION = 5;
+
+function _pfIsArray(x) {
+    return Object.prototype.toString.call(x) === "[object Array]";
+}
+
+function _pfIsObject(x) {
+    return x !== null && typeof x === "object" && !_pfIsArray(x);
+}
+
+function _pfStr(v) {
+    try {
+        return String(v);
+    } catch (e) {
+        return "[unprintable value]";
+    }
+}
+
+function parseNumericInput(value) {
+    var n;
+    if (value === undefined || value === null) {
+        return { ok: false, reason: "missing" };
+    }
+    if (typeof value === "number") {
+        if (isFinite(value)) {
+            return { ok: true, value: value };
+        }
+        return { ok: false, reason: "invalid" };
+    }
+    if (typeof value === "string" && /^\s*[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?\s*$/.test(value)) {
+        n = parseFloat(value);
+        if (isFinite(n)) {
+            return { ok: true, value: n };
+        }
+    }
+    return { ok: false, reason: "invalid" };
+}
+
+function parsePositiveIntInput(value) {
+    var n;
+    if (value === undefined || value === null) {
+        return { ok: false, reason: "missing" };
+    }
+    if (typeof value === "number") {
+        if (isFinite(value) && value >= 1 && Math.floor(value) === value) {
+            return { ok: true, value: value };
+        }
+        return { ok: false, reason: "invalid" };
+    }
+    if (typeof value === "string" && /^\s*\d+\s*$/.test(value)) {
+        n = parseFloat(value);
+        if (isFinite(n) && n >= 1) {
+            return { ok: true, value: n };
+        }
+    }
+    return { ok: false, reason: "invalid" };
+}
+
+function _pfPlacementError(code, field, message) {
+    return { ok: false, error: { code: code, field: field, message: message } };
+}
+
+// Parses opts[field]; returns { value } (value null when omitted) or { error } (placement error object).
+function _pfPlacementNumber(opts, field, required) {
+    var raw = opts[field];
+    var parsed = parseNumericInput(raw);
+    if (!parsed.ok) {
+        if (parsed.reason === "missing") {
+            if (required) {
+                return { error: _pfPlacementError("MISSING_VALUE", field, field + " is required") };
+            }
+            return { value: null };
+        }
+        return { error: _pfPlacementError("INVALID_NUMBER", field, field + " must be a finite number (got: " + _pfStr(raw) + ")") };
+    }
+    return { value: parsed.value };
+}
+
+function computeFootagePlacement(opts) {
+    var EPS = FOOTAGE_TIMING_EPSILON;
+    var isStill, r, cst, D, sIn, sOut, fd, compDur;
+    var inFrame, frames, inPoint, outPoint, duration, startTime, sourceOutPoint;
+    var warnings = [];
+
+    // 1-2. Shape of opts and isStill
+    if (!_pfIsObject(opts)) {
+        return _pfPlacementError("INVALID_INPUT", null, "options must be an object");
+    }
+    if (opts.isStill !== undefined && opts.isStill !== null && typeof opts.isStill !== "boolean") {
+        return _pfPlacementError("INVALID_INPUT", "isStill", "isStill must be a boolean");
+    }
+    isStill = opts.isStill === true;
+
+    // 3. compStartTime
+    r = _pfPlacementNumber(opts, "compStartTime", true);
+    if (r.error) { return r.error; }
+    cst = r.value;
+
+    // 4. sourceDuration (ignored entirely for stills)
+    D = null;
+    if (!isStill) {
+        r = _pfPlacementNumber(opts, "sourceDuration", true);
+        if (r.error) { return r.error; }
+        D = r.value;
+        if (D < 0) {
+            return _pfPlacementError("NEGATIVE_VALUE", "sourceDuration", "sourceDuration must be >= 0 (got: " + D + ")");
+        }
+    }
+
+    // 5. sourceInPoint
+    r = _pfPlacementNumber(opts, "sourceInPoint", false);
+    if (r.error) { return r.error; }
+    sIn = (r.value === null) ? 0 : r.value;
+    if (sIn < 0) {
+        return _pfPlacementError("NEGATIVE_VALUE", "sourceInPoint", "sourceInPoint must be >= 0 (got: " + sIn + ")");
+    }
+
+    // 6. sourceOutPoint
+    r = _pfPlacementNumber(opts, "sourceOutPoint", false);
+    if (r.error) { return r.error; }
+    if (r.value === null) {
+        sOut = isStill ? (sIn + STILL_DEFAULT_DURATION) : D;
+    } else {
+        sOut = r.value;
+        if (sOut < 0) {
+            return _pfPlacementError("NEGATIVE_VALUE", "sourceOutPoint", "sourceOutPoint must be >= 0 (got: " + sOut + ")");
+        }
+    }
+
+    // 7. frameDuration
+    r = _pfPlacementNumber(opts, "frameDuration", false);
+    if (r.error) { return r.error; }
+    fd = r.value;
+    if (fd !== null && fd <= 0) {
+        return _pfPlacementError("NON_POSITIVE_VALUE", "frameDuration", "frameDuration must be > 0 (got: " + fd + ")");
+    }
+
+    // 8. compDuration
+    r = _pfPlacementNumber(opts, "compDuration", false);
+    if (r.error) { return r.error; }
+    compDur = r.value;
+    if (compDur !== null && compDur <= 0) {
+        return _pfPlacementError("NON_POSITIVE_VALUE", "compDuration", "compDuration must be > 0 (got: " + compDur + ")");
+    }
+
+    // 9. Source duration check (non-stills only), silent clamp within EPS
+    if (!isStill) {
+        if (sOut > D + EPS) {
+            return _pfPlacementError("OUT_EXCEEDS_DURATION", "sourceOutPoint",
+                "sourceOutPoint (" + sOut + " s) exceeds the source duration (" + D + " s)");
+        } else if (sOut > D) {
+            sOut = D;
+        }
+    }
+
+    // 10. In before out (exact, before rounding)
+    if (sOut <= sIn) {
+        return _pfPlacementError("IN_NOT_BEFORE_OUT", "sourceOutPoint",
+            "sourceInPoint (" + sIn + " s) must be less than sourceOutPoint (" + sOut + " s)");
+    }
+
+    // 11. Timing
+    if (fd === null) {
+        inPoint = cst;
+        duration = sOut - sIn;
+        outPoint = cst + duration;
+        startTime = cst - sIn;
+        sourceOutPoint = sOut;
+    } else {
+        inFrame = Math.round(cst / fd);
+        inPoint = inFrame * fd;
+        frames = Math.round((sOut - sIn) / fd);
+        if (!isStill && sIn + frames * fd > D + EPS) {
+            frames = frames - 1;
+        }
+        if (frames < 1) {
+            return _pfPlacementError("RANGE_TOO_SHORT", "sourceOutPoint",
+                "Trimmed range is shorter than one comp frame (" + fd + " s)");
+        }
+        duration = frames * fd;
+        outPoint = inPoint + duration;
+        startTime = inPoint - sIn;
+        sourceOutPoint = sIn + duration;
+    }
+
+    // 12. Warnings
+    if (inPoint < -EPS) {
+        warnings.push({ code: "IN_BEFORE_COMP_START",
+            message: "Layer starts before the composition start (inPoint " + inPoint + " s < 0); the part before 0 s is not visible" });
+    }
+    if (compDur !== null && outPoint > compDur + EPS) {
+        warnings.push({ code: "OUT_BEYOND_COMP_END",
+            message: "Layer ends after the composition end (outPoint " + outPoint + " s > comp duration " + compDur + " s)" });
+    }
+
+    return {
+        ok: true,
+        startTime: startTime,
+        inPoint: inPoint,
+        outPoint: outPoint,
+        duration: duration,
+        sourceInPoint: sIn,
+        sourceOutPoint: sourceOutPoint,
+        isStill: isStill,
+        frameRounded: fd !== null,
+        warnings: warnings
+    };
+}
+
+function _pfRemapError(code, index, field, message) {
+    return { ok: false, error: { code: code, index: index, field: field, message: message } };
+}
+
+function validateTimeRemapKeyframes(keyframes, sourceDuration) {
+    var EPS = FOOTAGE_TIMING_EPSILON;
+    var D, parsedD, i, j, k, pt, ps, t, s, out, sorted;
+
+    if (!_pfIsArray(keyframes)) {
+        return _pfRemapError("INVALID_INPUT", null, "keyframes", "keyframes must be an array");
+    }
+    if (keyframes.length === 0) {
+        return _pfRemapError("EMPTY_KEYFRAMES", null, "keyframes", "keyframes must contain at least one keyframe");
+    }
+    parsedD = parseNumericInput(sourceDuration);
+    if (!parsedD.ok || parsedD.value <= 0) {
+        return _pfRemapError("INVALID_SOURCE_DURATION", null, "sourceDuration",
+            "sourceDuration must be a finite number > 0 (got: " + _pfStr(sourceDuration) + ")");
+    }
+    D = parsedD.value;
+
+    out = [];
+    for (i = 0; i < keyframes.length; i++) {
+        k = keyframes[i];
+        if (!_pfIsObject(k)) {
+            return _pfRemapError("INVALID_KEYFRAME", i, null,
+                "keyframes[" + i + "] must be an object with timeInSeconds and sourceTimeInSeconds");
+        }
+        pt = parseNumericInput(k.timeInSeconds);
+        if (!pt.ok) {
+            if (pt.reason === "missing") {
+                return _pfRemapError("MISSING_VALUE", i, "timeInSeconds", "keyframes[" + i + "].timeInSeconds is required");
+            }
+            return _pfRemapError("INVALID_NUMBER", i, "timeInSeconds",
+                "keyframes[" + i + "].timeInSeconds must be a finite number (got: " + _pfStr(k.timeInSeconds) + ")");
+        }
+        ps = parseNumericInput(k.sourceTimeInSeconds);
+        if (!ps.ok) {
+            if (ps.reason === "missing") {
+                return _pfRemapError("MISSING_VALUE", i, "sourceTimeInSeconds", "keyframes[" + i + "].sourceTimeInSeconds is required");
+            }
+            return _pfRemapError("INVALID_NUMBER", i, "sourceTimeInSeconds",
+                "keyframes[" + i + "].sourceTimeInSeconds must be a finite number (got: " + _pfStr(k.sourceTimeInSeconds) + ")");
+        }
+        t = pt.value;
+        s = ps.value;
+        if (s < -EPS || s > D + EPS) {
+            return _pfRemapError("SOURCE_TIME_OUT_OF_RANGE", i, "sourceTimeInSeconds",
+                "keyframes[" + i + "].sourceTimeInSeconds (" + s + " s) is outside the source range [0, " + D + "] s");
+        }
+        if (s < 0) { s = 0; }
+        if (s > D) { s = D; }
+        out.push({ timeInSeconds: t, sourceTimeInSeconds: s });
+    }
+
+    for (i = 1; i < out.length; i++) {
+        for (j = 0; j < i; j++) {
+            if (Math.abs(out[i].timeInSeconds - out[j].timeInSeconds) < EPS) {
+                return _pfRemapError("DUPLICATE_TIME", i, "timeInSeconds",
+                    "keyframes[" + i + "].timeInSeconds (" + out[i].timeInSeconds + " s) duplicates keyframes[" + j + "] (" + out[j].timeInSeconds + " s)");
+            }
+        }
+    }
+
+    sorted = out.slice(0);
+    sorted.sort(function (a, b) { return a.timeInSeconds - b.timeInSeconds; });
+    return { ok: true, keyframes: sorted };
+}
+
+function _pfIsFiniteNumber(x) {
+    return typeof x === "number" && isFinite(x);
+}
+
+function planTimeRemapKeyframes(existingKeyTimes, keyframes, remapWasEnabled) {
+    var EPS = FOOTAGE_TIMING_EPSILON;
+    var i, j, k, d, best, bestD, claimed, times, values, removeTimes, replacedCount, addedCount;
+
+    if (!_pfIsArray(existingKeyTimes)) {
+        return _pfRemapError("INVALID_INPUT", null, "existingKeyTimes", "existingKeyTimes must be an array of numbers");
+    }
+    if (!_pfIsArray(keyframes)) {
+        return _pfRemapError("INVALID_INPUT", null, "keyframes", "keyframes must be an array");
+    }
+    if (typeof remapWasEnabled !== "boolean") {
+        return _pfRemapError("INVALID_INPUT", null, "remapWasEnabled", "remapWasEnabled must be a boolean");
+    }
+    for (i = 0; i < existingKeyTimes.length; i++) {
+        if (!_pfIsFiniteNumber(existingKeyTimes[i])) {
+            return _pfRemapError("INVALID_INPUT", null, "existingKeyTimes", "existingKeyTimes must contain only finite numbers");
+        }
+    }
+    for (i = 0; i < keyframes.length; i++) {
+        k = keyframes[i];
+        if (!_pfIsObject(k) || !_pfIsFiniteNumber(k.timeInSeconds) || !_pfIsFiniteNumber(k.sourceTimeInSeconds)) {
+            return _pfRemapError("INVALID_INPUT", null, "keyframes",
+                "keyframes must contain objects with numeric timeInSeconds and sourceTimeInSeconds");
+        }
+    }
+
+    claimed = [];
+    for (j = 0; j < existingKeyTimes.length; j++) {
+        claimed.push(false);
+    }
+    times = [];
+    values = [];
+    replacedCount = 0;
+    addedCount = 0;
+    for (i = 0; i < keyframes.length; i++) {
+        k = keyframes[i];
+        best = -1;
+        bestD = 0;
+        for (j = 0; j < existingKeyTimes.length; j++) {
+            if (claimed[j]) { continue; }
+            d = Math.abs(existingKeyTimes[j] - k.timeInSeconds);
+            if (d < EPS && (best === -1 || d < bestD)) {
+                best = j;
+                bestD = d;
+            }
+        }
+        if (best !== -1) {
+            claimed[best] = true;
+            times.push(existingKeyTimes[best]);
+            replacedCount++;
+        } else {
+            times.push(k.timeInSeconds);
+            addedCount++;
+        }
+        values.push(k.sourceTimeInSeconds);
+    }
+
+    removeTimes = [];
+    if (remapWasEnabled === false) {
+        for (j = 0; j < existingKeyTimes.length; j++) {
+            if (!claimed[j]) {
+                removeTimes.push(existingKeyTimes[j]);
+            }
+        }
+    }
+
+    return {
+        ok: true,
+        times: times,
+        values: values,
+        removeTimes: removeTimes,
+        replacedCount: replacedCount,
+        addedCount: addedCount
+    };
+}
+// PURE-BLOCK-END footage-timing
+
+// --- Footage commands: private AE helpers ---
+function _mcpNum(v) {
+    return (typeof v === "number" && isFinite(v)) ? v : null;
+}
+
+function _mcpError(code, message, extra) {
+    var obj = { status: "error", code: code, message: message };
+    if (extra) {
+        if (extra.field !== undefined && extra.field !== null) {
+            obj.field = extra.field;
+        }
+        if (extra.index !== undefined && extra.index !== null) {
+            obj.index = extra.index;
+        }
+    }
+    return obj;
+}
+
+function _mcpIsError(obj) {
+    return obj !== null && typeof obj === "object" && obj.status === "error";
+}
+
+function _mcpExceptionText(e) {
+    var text;
+    try {
+        text = (e && typeof e.toString === "function") ? e.toString() : String(e);
+    } catch (eText) {
+        text = "Unknown error";
+    }
+    if (e && e.line) {
+        text += " (line " + e.line + ")";
+    }
+    return text;
+}
+
+function _mcpItemTypeName(item) {
+    if (item instanceof CompItem) { return "CompItem"; }
+    if (item instanceof FolderItem) { return "FolderItem"; }
+    if (item instanceof FootageItem) { return "FootageItem"; }
+    return "Item";
+}
+
+function _mcpNormPath(p) {
+    var s = String(p);
+    if (File.fs === "Windows") {
+        s = s.toLowerCase();
+    }
+    return s;
+}
+
+// Returns { comp, index } or an error object.
+function _mcpResolveComp(raw) {
+    var parsed = parsePositiveIntInput(raw);
+    var n, m, item;
+    if (!parsed.ok) {
+        return _mcpError("INVALID_ARGS", "compIndex must be a positive integer (got: " + String(raw) + ")");
+    }
+    n = parsed.value;
+    m = app.project.numItems;
+    if (n > m) {
+        return _mcpError("COMP_NOT_FOUND", "Composition not found at index " + n + " (project has " + m + " items)");
+    }
+    item = app.project.item(n);
+    if (!(item instanceof CompItem)) {
+        return _mcpError("NOT_A_COMP", "Item at index " + n + " is not a composition (it is a " + _mcpItemTypeName(item) + ")");
+    }
+    return { comp: item, index: n };
+}
+
+// Returns { layer, index } or an error object.
+function _mcpResolveLayer(comp, raw) {
+    var parsed = parsePositiveIntInput(raw);
+    var n, m;
+    if (!parsed.ok) {
+        return _mcpError("INVALID_ARGS", "layerIndex must be a positive integer (got: " + String(raw) + ")");
+    }
+    n = parsed.value;
+    m = comp.numLayers;
+    if (n > m) {
+        return _mcpError("LAYER_NOT_FOUND", "Layer not found at index " + n + " in composition '" + comp.name + "' (it has " + m + " layers)");
+    }
+    return { layer: comp.layer(n), index: n };
+}
+
+// Returns { footage } or an error object.
+function _mcpResolveFootage(args) {
+    var hasId = args.footageId !== undefined && args.footageId !== null;
+    var hasName = args.footageName !== undefined && args.footageName !== null && args.footageName !== "";
+    var parsed, id, item, i, candidate, matches, ids;
+    if (hasId === hasName) {
+        return _mcpError("INVALID_ARGS", "Provide exactly one of footageId or footageName");
+    }
+    if (hasId) {
+        parsed = parsePositiveIntInput(args.footageId);
+        if (!parsed.ok) {
+            return _mcpError("INVALID_ARGS", "footageId must be a positive integer (got: " + String(args.footageId) + ")");
+        }
+        id = parsed.value;
+        item = null;
+        if (typeof app.project.itemByID === "function") {
+            try {
+                item = app.project.itemByID(id);
+            } catch (eById) {
+                item = null;
+            }
+        }
+        if (!item) {
+            item = null;
+            for (i = 1; i <= app.project.numItems; i++) {
+                candidate = app.project.item(i);
+                if (candidate.id === id) {
+                    item = candidate;
+                    break;
+                }
+            }
+        }
+        if (!item) {
+            return _mcpError("FOOTAGE_NOT_FOUND", "No project item found with id " + id);
+        }
+        if (!(item instanceof FootageItem)) {
+            return _mcpError("NOT_FOOTAGE", "Project item " + id + " ('" + item.name + "') is not a FootageItem (it is a " + _mcpItemTypeName(item) + ")");
+        }
+        return { footage: item };
+    }
+    matches = [];
+    for (i = 1; i <= app.project.numItems; i++) {
+        candidate = app.project.item(i);
+        if (candidate instanceof FootageItem && candidate.name === args.footageName) {
+            matches.push(candidate);
+        }
+    }
+    if (matches.length === 0) {
+        return _mcpError("FOOTAGE_NOT_FOUND", "No footage item named '" + args.footageName + "' found in the project");
+    }
+    if (matches.length > 1) {
+        ids = [];
+        for (i = 0; i < matches.length; i++) {
+            ids.push(matches[i].id);
+        }
+        return _mcpError("AMBIGUOUS_FOOTAGE_NAME", "Multiple footage items are named '" + args.footageName + "' (ids: " + ids.join(", ") + "). Use footageId instead.");
+    }
+    return { footage: matches[0] };
+}
+
+// Returns { folder, created }: first root-level FolderItem with this name, or a new one.
+function _mcpFindOrCreateRootFolder(name) {
+    var rootId = app.project.rootFolder.id;
+    var i, item;
+    for (i = 1; i <= app.project.numItems; i++) {
+        item = app.project.item(i);
+        if (item instanceof FolderItem && item.name === name && item.parentFolder && item.parentFolder.id === rootId) {
+            return { folder: item, created: false };
+        }
+    }
+    return { folder: app.project.items.addFolder(name), created: true };
+}
+
+function _mcpCopyWarnings(src, dest) {
+    var i;
+    if (src) {
+        for (i = 0; i < src.length; i++) {
+            dest.push({ code: src[i].code, message: src[i].message });
+        }
+    }
+}
+
+function _mcpJoinWarnings(warnings) {
+    var parts = [];
+    var i;
+    for (i = 0; i < warnings.length; i++) {
+        parts.push(warnings[i].message);
+    }
+    return parts.join("; ");
+}
+
+function _mcpIsStillFootage(footage) {
+    return (footage.mainSource && footage.mainSource.isStill === true) ? true : (footage.duration === 0);
+}
+
+// --- importFootage: import a local file as a FootageItem ---
+function importFootage(args) {
+    var undoOpen = false;
+    var item = null;
+    var committed = false;
+    try {
+        var a = (args && typeof args === "object") ? args : {};
+        var filePath = a.filePath;
+        var folderName = a.folderName;
+        var hasFolder = folderName !== undefined && folderName !== null;
+        var f, io, canImport, importErr, targetNorm, existingItemIds, i, candidate;
+        var folderInfo, folderRes, hasVideo, hasAudio, isStill, parentFolder, result;
+
+        if (typeof filePath !== "string" || filePath === "") {
+            return JSON.stringify(_mcpError("INVALID_ARGS", "filePath must be a non-empty string"), null, 2);
+        }
+        if (hasFolder && (typeof folderName !== "string" || folderName === "")) {
+            return JSON.stringify(_mcpError("INVALID_ARGS", "folderName must be a non-empty string when provided"), null, 2);
+        }
+        if (!/^([A-Za-z]:[\\\/]|\/|~\/)/.test(filePath) || filePath.substring(0, 2) === "\\\\" || filePath.substring(0, 2) === "//") {
+            return JSON.stringify(_mcpError("INVALID_ARGS", "filePath must be an absolute local path: " + filePath), null, 2);
+        }
+        f = new File(filePath);
+        if (!f.exists) {
+            return JSON.stringify(_mcpError("FILE_NOT_FOUND", "File not found: " + filePath), null, 2);
+        }
+        if (f instanceof Folder) {
+            return JSON.stringify(_mcpError("NOT_A_FILE", "Path is a folder, not a file: " + filePath), null, 2);
+        }
+        io = null;
+        canImport = false;
+        importErr = null;
+        try {
+            io = new ImportOptions(f);
+            canImport = io.canImportAs(ImportAsType.FOOTAGE) === true;
+        } catch (eIo) {
+            importErr = eIo;
+            canImport = false;
+        }
+        if (!canImport) {
+            return JSON.stringify(_mcpError("CANNOT_IMPORT", "After Effects cannot import this file as footage: " + filePath +
+                (importErr ? " (" + _mcpExceptionText(importErr) + ")" : "")), null, 2);
+        }
+        io.importAs = ImportAsType.FOOTAGE;
+        io.sequence = false;
+
+        // alreadyInProject is computed before importing (decision 3: always import)
+        targetNorm = _mcpNormPath(f.fsName);
+        existingItemIds = [];
+        for (i = 1; i <= app.project.numItems; i++) {
+            candidate = app.project.item(i);
+            if (candidate instanceof FootageItem && candidate.file && _mcpNormPath(candidate.file.fsName) === targetNorm) {
+                existingItemIds.push(candidate.id);
+            }
+        }
+
+        app.beginUndoGroup("MCP: Import Footage");
+        undoOpen = true;
+        item = app.project.importFile(io);
+        if (!item) {
+            throw new Error("importFile did not return a project item");
+        }
+
+        folderInfo = null;
+        if (hasFolder) {
+            folderRes = _mcpFindOrCreateRootFolder(folderName);
+            item.parentFolder = folderRes.folder;
+            folderInfo = { id: folderRes.folder.id, name: folderRes.folder.name, created: folderRes.created };
+        }
+
+        hasVideo = item.hasVideo === true;
+        hasAudio = item.hasAudio === true;
+        isStill = _mcpIsStillFootage(item);
+        parentFolder = item.parentFolder;
+        result = {
+            status: "success",
+            message: "Footage imported successfully",
+            footage: {
+                id: item.id,
+                name: item.name,
+                filePath: item.file ? item.file.fsName : f.fsName,
+                width: hasVideo ? _mcpNum(item.width) : null,
+                height: hasVideo ? _mcpNum(item.height) : null,
+                duration: _mcpNum(item.duration),
+                frameRate: (isStill || !hasVideo) ? null : _mcpNum(item.frameRate),
+                pixelAspect: hasVideo ? _mcpNum(item.pixelAspect) : null,
+                isStill: isStill,
+                hasVideo: hasVideo,
+                hasAudio: hasAudio,
+                parentFolder: parentFolder ? { id: parentFolder.id, name: parentFolder.name } : null
+            },
+            alreadyInProject: existingItemIds.length > 0,
+            existingItemIds: existingItemIds,
+            folder: folderInfo
+        };
+        committed = true;
+
+        undoOpen = false;
+        try { app.endUndoGroup(); } catch (eEndUndo) {}
+        return JSON.stringify(result, null, 2);
+    } catch (e) {
+        if (item && !committed) {
+            try { item.remove(); } catch (eRemove) {}
+        }
+        if (undoOpen) {
+            try { app.endUndoGroup(); } catch (e2) {}
+        }
+        return JSON.stringify(_mcpError("AE_ERROR", _mcpExceptionText(e)), null, 2);
+    }
+}
+
+// --- addFootageLayer: place a footage item on a comp timeline, trimmed to a source range ---
+function addFootageLayer(args) {
+    var undoOpen = false;
+    var layer = null;
+    var committed = false;
+    try {
+        var a = (args && typeof args === "object") ? args : {};
+        var EPS = FOOTAGE_TIMING_EPSILON;
+        var compRes, comp, footageRes, footage, hasPosition, position, i, isStill, p;
+        var warnings, transformGroup, positionProp, positionOut, posValue;
+        var actualStart, actualIn, actualOut, result;
+
+        compRes = _mcpResolveComp(a.compIndex);
+        if (_mcpIsError(compRes)) {
+            return JSON.stringify(compRes, null, 2);
+        }
+        comp = compRes.comp;
+
+        footageRes = _mcpResolveFootage(a);
+        if (_mcpIsError(footageRes)) {
+            return JSON.stringify(footageRes, null, 2);
+        }
+        footage = footageRes.footage;
+
+        hasPosition = a.position !== undefined && a.position !== null;
+        position = null;
+        if (hasPosition) {
+            if (Object.prototype.toString.call(a.position) !== "[object Array]" || (a.position.length !== 2 && a.position.length !== 3)) {
+                return JSON.stringify(_mcpError("INVALID_ARGS", "position must be an array of 2 or 3 finite numbers"), null, 2);
+            }
+            position = [];
+            for (i = 0; i < a.position.length; i++) {
+                if (typeof a.position[i] !== "number" || !isFinite(a.position[i])) {
+                    return JSON.stringify(_mcpError("INVALID_ARGS", "position must be an array of 2 or 3 finite numbers"), null, 2);
+                }
+                position.push(a.position[i]);
+            }
+        }
+
+        isStill = _mcpIsStillFootage(footage);
+        p = computeFootagePlacement({
+            compStartTime: a.compStartTime,
+            sourceInPoint: a.sourceInPoint,
+            sourceOutPoint: a.sourceOutPoint,
+            sourceDuration: footage.duration,
+            isStill: isStill,
+            frameDuration: comp.frameDuration,
+            compDuration: comp.duration
+        });
+        if (!p.ok) {
+            return JSON.stringify(_mcpError(p.error.code, p.error.message, { field: p.error.field }), null, 2);
+        }
+
+        app.beginUndoGroup("MCP: Add Footage Layer");
+        undoOpen = true;
+        layer = comp.layers.add(footage);
+        layer.startTime = p.startTime;
+        if (p.inPoint >= layer.outPoint) {
+            layer.outPoint = p.outPoint;
+            layer.inPoint = p.inPoint;
+        } else {
+            layer.inPoint = p.inPoint;
+            layer.outPoint = p.outPoint;
+        }
+
+        warnings = [];
+        _mcpCopyWarnings(p.warnings, warnings);
+
+        transformGroup = null;
+        if (footage.hasVideo) {
+            try {
+                transformGroup = layer.property("ADBE Transform Group");
+            } catch (eTransform) {
+                transformGroup = null;
+            }
+        }
+        if (hasPosition) {
+            positionProp = null;
+            if (footage.hasVideo && transformGroup) {
+                try {
+                    positionProp = transformGroup.property("ADBE Position");
+                } catch (ePosLookup) {
+                    positionProp = null;
+                }
+            }
+            if (positionProp) {
+                positionProp.setValue(position);
+            } else if (footage.hasVideo) {
+                warnings.push({ code: "POSITION_NOT_SET",
+                    message: "position was not set because the layer's Position property could not be found" });
+            } else {
+                warnings.push({ code: "POSITION_IGNORED_AUDIO_ONLY",
+                    message: "position was ignored because the footage has no video (audio-only layer)" });
+            }
+        }
+        positionOut = null;
+        if (transformGroup) {
+            positionProp = transformGroup.property("ADBE Position");
+            if (positionProp) {
+                posValue = positionProp.value;
+                positionOut = [];
+                for (i = 0; i < posValue.length; i++) {
+                    positionOut.push(_mcpNum(posValue[i]));
+                }
+            }
+        }
+
+        actualStart = layer.startTime;
+        actualIn = layer.inPoint;
+        actualOut = layer.outPoint;
+        if (Math.abs(actualStart - p.startTime) > EPS || Math.abs(actualIn - p.inPoint) > EPS || Math.abs(actualOut - p.outPoint) > EPS) {
+            warnings.push({ code: "AE_ADJUSTED_TIMES",
+                message: "After Effects adjusted the layer times: computed startTime/inPoint/outPoint = " +
+                    p.startTime + "/" + p.inPoint + "/" + p.outPoint + " s, actual = " +
+                    actualStart + "/" + actualIn + "/" + actualOut + " s" });
+        }
+
+        result = {
+            status: "success",
+            message: "Footage layer added successfully",
+            layer: {
+                index: layer.index,
+                name: layer.name,
+                startTime: _mcpNum(actualStart),
+                inPoint: _mcpNum(actualIn),
+                outPoint: _mcpNum(actualOut),
+                duration: _mcpNum(actualOut - actualIn),
+                position: positionOut,
+                hasVideo: layer.hasVideo === true,
+                hasAudio: layer.hasAudio === true
+            },
+            footage: { id: footage.id, name: footage.name, isStill: isStill },
+            composition: {
+                index: compRes.index,
+                id: comp.id,
+                name: comp.name,
+                frameRate: _mcpNum(comp.frameRate),
+                duration: _mcpNum(comp.duration)
+            },
+            computed: {
+                startTime: p.startTime,
+                inPoint: p.inPoint,
+                outPoint: p.outPoint,
+                sourceInPoint: p.sourceInPoint,
+                sourceOutPoint: p.sourceOutPoint
+            },
+            warnings: warnings
+        };
+        if (warnings.length > 0) {
+            result.warning = _mcpJoinWarnings(warnings);
+        }
+        committed = true;
+
+        undoOpen = false;
+        try { app.endUndoGroup(); } catch (eEndUndo) {}
+        return JSON.stringify(result, null, 2);
+    } catch (e) {
+        if (layer && !committed) {
+            try { layer.remove(); } catch (eRemove) {}
+        }
+        if (undoOpen) {
+            try { app.endUndoGroup(); } catch (e2) {}
+        }
+        return JSON.stringify(_mcpError("AE_ERROR", _mcpExceptionText(e)), null, 2);
+    }
+}
+
+// --- setLayerTimeRemap: set Time Remap keyframes (comp time -> source time) ---
+function setLayerTimeRemap(args) {
+    var undoOpen = false;
+    try {
+        var a = (args && typeof args === "object") ? args : {};
+        var EPS = FOOTAGE_TIMING_EPSILON;
+        var compRes, comp, layerRes, layer, v, wasEnabled, prop, existing, plan, removed;
+        var i, j, kt, keys, warnings, t, result;
+
+        compRes = _mcpResolveComp(a.compIndex);
+        if (_mcpIsError(compRes)) {
+            return JSON.stringify(compRes, null, 2);
+        }
+        comp = compRes.comp;
+        layerRes = _mcpResolveLayer(comp, a.layerIndex);
+        if (_mcpIsError(layerRes)) {
+            return JSON.stringify(layerRes, null, 2);
+        }
+        layer = layerRes.layer;
+
+        if (!(layer instanceof AVLayer) || !layer.source ||
+            !(layer.source instanceof FootageItem || layer.source instanceof CompItem)) {
+            return JSON.stringify(_mcpError("NO_FOOTAGE_SOURCE", "Layer '" + layer.name +
+                "' has no footage source; text, shape, camera and light layers cannot be time-remapped"), null, 2);
+        }
+        if (layer.canSetTimeRemapEnabled !== true) {
+            return JSON.stringify(_mcpError("TIME_REMAP_NOT_SUPPORTED", "Layer '" + layer.name +
+                "' does not support Time Remap (still images, solids and null layers cannot be time-remapped)"), null, 2);
+        }
+        v = validateTimeRemapKeyframes(a.keyframes, layer.source.duration);
+        if (!v.ok) {
+            return JSON.stringify(_mcpError(v.error.code, v.error.message, { field: v.error.field, index: v.error.index }), null, 2);
+        }
+
+        app.beginUndoGroup("MCP: Set Time Remap");
+        undoOpen = true;
+        wasEnabled = layer.timeRemapEnabled === true;
+        if (!wasEnabled) {
+            layer.timeRemapEnabled = true;
+        }
+        prop = layer.property("ADBE Time Remapping");
+
+        // Snapshot the keys present now (AE's auto keys if we just enabled remap)
+        existing = [];
+        for (i = 1; i <= prop.numKeys; i++) {
+            existing.push(prop.keyTime(i));
+        }
+        plan = planTimeRemapKeyframes(existing, v.keyframes, wasEnabled);
+        if (!plan.ok) {
+            throw new Error(plan.error.message);
+        }
+
+        // Add caller keys first, then remove unclaimed auto keys (never reaches zero keys)
+        prop.setValuesAtTimes(plan.times, plan.values);
+        removed = 0;
+        for (i = prop.numKeys; i >= 1; i--) {
+            kt = prop.keyTime(i);
+            for (j = 0; j < plan.removeTimes.length; j++) {
+                if (Math.abs(kt - plan.removeTimes[j]) < 1e-6) {
+                    prop.removeKey(i);
+                    removed++;
+                    break;
+                }
+            }
+        }
+
+        keys = [];
+        for (i = 1; i <= prop.numKeys; i++) {
+            keys.push({ timeInSeconds: _mcpNum(prop.keyTime(i)), sourceTimeInSeconds: _mcpNum(prop.keyValue(i)) });
+        }
+
+        warnings = [];
+        for (i = 0; i < plan.times.length; i++) {
+            t = plan.times[i];
+            if (t < layer.inPoint - EPS || t > layer.outPoint + EPS) {
+                warnings.push({ code: "KEY_OUTSIDE_LAYER_RANGE",
+                    message: "Keyframe at " + t + " s is outside the layer's visible range [" + layer.inPoint + ", " + layer.outPoint + "] s" });
+            }
+        }
+
+        result = {
+            status: "success",
+            message: "Time remap keyframes set successfully",
+            layer: {
+                index: layer.index,
+                name: layer.name,
+                inPoint: _mcpNum(layer.inPoint),
+                outPoint: _mcpNum(layer.outPoint)
+            },
+            composition: { index: compRes.index, id: comp.id, name: comp.name },
+            timeRemapWasEnabled: wasEnabled,
+            autoKeyframesRemoved: removed,
+            keyframesAdded: plan.addedCount,
+            keyframesReplaced: plan.replacedCount,
+            keyframes: keys,
+            warnings: warnings
+        };
+        if (warnings.length > 0) {
+            result.warning = _mcpJoinWarnings(warnings);
+        }
+
+        undoOpen = false;
+        try { app.endUndoGroup(); } catch (eEndUndo) {}
+        return JSON.stringify(result, null, 2);
+    } catch (e) {
+        var partial = undoOpen;
+        if (undoOpen) {
+            try { app.endUndoGroup(); } catch (e2) {}
+        }
+        return JSON.stringify(_mcpError("AE_ERROR", _mcpExceptionText(e) +
+            (partial ? " (changes may be partially applied; use Edit > Undo)" : "")), null, 2);
+    }
+}
+
 // JSON polyfill for ExtendScript (when JSON is undefined)
 if (typeof JSON === "undefined") {
     JSON = {};
@@ -1595,6 +2528,21 @@ function executeCommand(command, args) {
                 result = setLayerMask(args);
                 logToPanel("Returned from setLayerMask.");
                 break;
+            case "importFootage":
+                logToPanel("Calling importFootage function...");
+                result = importFootage(args);
+                logToPanel("Returned from importFootage.");
+                break;
+            case "addFootageLayer":
+                logToPanel("Calling addFootageLayer function...");
+                result = addFootageLayer(args);
+                logToPanel("Returned from addFootageLayer.");
+                break;
+            case "setLayerTimeRemap":
+                logToPanel("Calling setLayerTimeRemap function...");
+                result = setLayerTimeRemap(args);
+                logToPanel("Returned from setLayerTimeRemap.");
+                break;
             default:
                 result = JSON.stringify({ error: "Unknown command: " + command });
         }
@@ -1608,8 +2556,12 @@ function executeCommand(command, args) {
         try {
             var resultObj = JSON.parse(resultString);
             // Add a timestamp to help identify if we're getting fresh results
-            resultObj._responseTimestamp = new Date().toISOString();
             resultObj._commandExecuted = command;
+            try {
+                resultObj._responseTimestamp = new Date().toISOString();
+            } catch (eTs) {
+                resultObj._responseTimestamp = String(new Date().getTime());
+            }
             resultString = JSON.stringify(resultObj, null, 2);
             logToPanel("Added timestamp to result JSON for tracking freshness.");
         } catch (parseError) {
@@ -1688,6 +2640,7 @@ function updateCommandStatus(status) {
     try {
         var commandFile = new File(getCommandFilePath());
         if (commandFile.exists) {
+            commandFile.encoding = "UTF-8";
             commandFile.open("r");
             var content = commandFile.read();
             commandFile.close();
@@ -1696,6 +2649,7 @@ function updateCommandStatus(status) {
                 var commandData = JSON.parse(content);
                 commandData.status = status;
                 
+                commandFile.encoding = "UTF-8";
                 commandFile.open("w");
                 commandFile.write(JSON.stringify(commandData, null, 2));
                 commandFile.close();
@@ -1721,6 +2675,7 @@ function checkForCommands() {
     try {
         var commandFile = new File(getCommandFilePath());
         if (commandFile.exists) {
+            commandFile.encoding = "UTF-8";
             commandFile.open("r");
             var content = commandFile.read();
             commandFile.close();

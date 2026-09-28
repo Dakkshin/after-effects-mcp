@@ -190,7 +190,10 @@ server.tool(
       "setCompositionProperties",
       "duplicateLayer",
       "deleteLayer",
-      "setLayerMask"
+      "setLayerMask",
+      "importFootage",
+      "addFootageLayer",
+      "setLayerTimeRemap"
     ];
     
     if (!allowedScripts.includes(script)) {
@@ -366,6 +369,17 @@ Available scripts:
 - setLayerExpression: Set an expression for a layer property
 - applyEffect: Apply an effect to a layer
 - applyEffectTemplate: Apply a predefined effect template to a layer
+- importFootage: Import a local video/audio/image file by absolute path (optional root-level folderName); returns footage id, name, width, height, duration
+- addFootageLayer: Place a footage item (footageId or footageName) on a comp timeline, trimmed to a source in/out range, starting at compStartTime
+- setLayerTimeRemap: Set Time Remap keyframes (comp time -> source time) on a footage or precomp layer for speed ramps
+
+Footage workflow (importFootage -> addFootageLayer -> setLayerTimeRemap):
+- These three are also dedicated MCP tools. They wait for the After Effects result (up to 20 s for importFootage, 8 s for the others). On timeout they return a "Timed out ... get-results" message (not an error): the command is still queued, so call \`get-results\` before sending the next command. Only one command runs at a time (there is a single command file); a new command overwrites one that has not been picked up yet.
+- importFootage {"filePath": "D:/footage/interview.mp4", "folderName": "Sources"}: always creates a new project item (no de-duplication); alreadyInProject / existingItemIds report earlier imports of the same file. Use footage.id from the result as footageId.
+- compIndex is the 1-based position of the comp in the project item list (app.project.item(i)), NOT the comp id. It may change after imports or new folders (AE appears to keep the list sorted by name), so re-read it right before use: run-script getProjectInfo, then get-results; compIndex = position in "items" + 1 (only the first 50 items are listed).
+- addFootageLayer {"compIndex": 1, "footageId": 12, "compStartTime": 2, "sourceInPoint": 4.5, "sourceOutPoint": 7.5}: at comp time 2 s the layer shows source time 4.5 s and it ends at 2 + (7.5 - 4.5) = 5 s. sourceInPoint defaults to 0, sourceOutPoint to the full source duration (stills: 5 s). Comp times snap to the comp frame grid; a sourceOutPoint up to 1 ms past the source end is clamped, more is an error. The layer is added on top (index 1), so existing layer indices shift down by one; use layer.index from the result.
+- setLayerTimeRemap {"compIndex": 1, "layerIndex": 1, "keyframes": [{"timeInSeconds": 2, "sourceTimeInSeconds": 4.5}, {"timeInSeconds": 3, "sourceTimeInSeconds": 6.5}, {"timeInSeconds": 5, "sourceTimeInSeconds": 7.5}]}: each key maps a comp time to a source time (0..source duration); this example plays 2x, then 0.5x. If the call turns Time Remap on, AE's two automatic keyframes are removed; if Time Remap was already on, your keys are merged with the existing ones. A key within 1 ms of an existing key replaces it.
+- Errors are JSON: {"status": "error", "code": "...", "message": "..."} (e.g. FILE_NOT_FOUND, COMP_NOT_FOUND, NOT_A_COMP, FOOTAGE_NOT_FOUND, AMBIGUOUS_FOOTAGE_NAME, OUT_EXCEEDS_DURATION, TIME_REMAP_NOT_SUPPORTED). Non-fatal issues are listed in "warnings".
 
 Effect Templates:
 - gaussian-blur: Simple Gaussian blur effect
@@ -836,6 +850,8 @@ server.tool(
           type: "text",
           text: `# After Effects Effects Help
 
+For footage import, trimmed placement and Time Remap, see the get-help tool.
+
 ## Common Effect Match Names
 These are internal names used by After Effects that can be used with the \`effectMatchName\` parameter:
 
@@ -945,6 +961,120 @@ server.tool(
     }
   }
 );
+
+// --- BEGIN FOOTAGE TOOLS ---
+const FOOTAGE_IMPORT_TIMEOUT_MS = 20000;
+const FOOTAGE_DEFAULT_TIMEOUT_MS = 8000;
+
+// Test hook: AE_MCP_BRIDGE_TIMEOUT_MS (positive integer) overrides both timeouts. Read at call time.
+function resolveBridgeTimeout(defaultMs: number): number {
+  const raw = process.env.AE_MCP_BRIDGE_TIMEOUT_MS;
+  if (raw !== undefined) { const n = Number(raw); if (Number.isInteger(n) && n > 0) return n; }
+  return defaultMs;
+}
+
+function footageToolError(code: string, message: string) {
+  return { content: [{ type: "text" as const, text: JSON.stringify({ status: "error", code, message }, null, 2) }], isError: true };
+}
+
+async function queueCommandAndWait(command: string, args: Record<string, unknown>, timeoutMs: number) {
+  clearResultsFile();
+  writeCommandFile(command, args);
+  const raw = await waitForBridgeResult(command, timeoutMs, 250);
+  let parsed: any = null;
+  try { parsed = JSON.parse(raw); } catch { parsed = null; }
+  if (parsed && parsed._commandExecuted === command) {
+    return { content: [{ type: "text" as const, text: raw }], isError: parsed.status === "error" };
+  }
+  return { content: [{ type: "text" as const, text:
+    `Timed out after ${timeoutMs} ms waiting for After Effects to finish "${command}". ` +
+    `The command is still queued and may complete later. Make sure the "MCP Bridge Auto" panel is open ` +
+    `in After Effects with "Auto-run commands" checked, then call the "get-results" tool to retrieve the result.` }] };
+}
+
+server.tool(
+  "importFootage",
+  "Import a local video, audio or image file into the After Effects project by absolute path. Always creates a new project item (no de-duplication; the result reports alreadyInProject). Optionally files it into a root-level Project panel folder (created if missing). Waits up to 20 s for the result: footage id, name, width, height, duration.",
+  {
+    filePath: z.string().min(1).describe("Absolute path to a local video/audio/image file."),
+    folderName: z.string().min(1).optional().describe("Optional Project panel folder at project root; created if missing.")
+  },
+  async ({ filePath, folderName }) => {
+    try {
+      if (!path.isAbsolute(filePath)) {
+        return footageToolError("INVALID_ARGS", `filePath must be an absolute path: ${filePath}`);
+      }
+      if (filePath.startsWith("\\\\") || filePath.startsWith("//")) {
+        return footageToolError("INVALID_ARGS", `Network (UNC) paths are not supported: ${filePath}`);
+      }
+      if (process.platform === "win32" && !/^[A-Za-z]:[\\/]/.test(filePath)) {
+        return footageToolError("INVALID_ARGS", `filePath must be an absolute path: ${filePath}`);
+      }
+      if (!fs.existsSync(filePath)) {
+        return footageToolError("FILE_NOT_FOUND", `File not found: ${filePath}`);
+      }
+      if (!fs.statSync(filePath).isFile()) {
+        return footageToolError("NOT_A_FILE", `Path is not a regular file: ${filePath}`);
+      }
+      const args: Record<string, unknown> = { filePath: path.resolve(filePath) };
+      if (folderName !== undefined) {
+        args.folderName = folderName;
+      }
+      return await queueCommandAndWait("importFootage", args, resolveBridgeTimeout(FOOTAGE_IMPORT_TIMEOUT_MS));
+    } catch (error) {
+      return footageToolError("INTERNAL_ERROR", String(error));
+    }
+  }
+);
+
+server.tool(
+  "addFootageLayer",
+  "Place an existing footage item (by footageId or footageName) on a composition's timeline, trimmed to a source range. At compStartTime the source frame at sourceInPoint is shown; the layer ends at compStartTime + (sourceOutPoint - sourceInPoint). Times snap to comp frames. Stills default to 5 s. Waits up to 8 s for the result.",
+  {
+    compIndex: z.number().int().positive().describe("1-based index of the target composition in the project item list (app.project.item(i))."),
+    footageId: z.number().int().positive().optional().describe("Project item id of the footage (e.g. from importFootage). Provide exactly one of footageId/footageName."),
+    footageName: z.string().min(1).optional().describe("Exact name of the footage item. Errors if several footage items share the name."),
+    compStartTime: z.number().finite().describe("Comp time in seconds where sourceInPoint appears. May be negative."),
+    sourceInPoint: z.number().finite().min(0).optional().describe("Source time (s) where the clip starts. Default 0."),
+    sourceOutPoint: z.number().finite().min(0).optional().describe("Source time (s) where the clip ends. Default: full source duration (stills: sourceInPoint + 5)."),
+    position: z.array(z.number().finite()).min(2).max(3).optional().describe("Optional layer position [x, y] or [x, y, z].")
+  },
+  async (params) => {
+    try {
+      if ((params.footageId === undefined) === (params.footageName === undefined)) {
+        return footageToolError("INVALID_ARGS", "Provide exactly one of footageId or footageName.");
+      }
+      if (params.sourceInPoint !== undefined && params.sourceOutPoint !== undefined &&
+          !(params.sourceInPoint < params.sourceOutPoint)) {
+        return footageToolError("INVALID_ARGS",
+          `sourceInPoint (${params.sourceInPoint}) must be less than sourceOutPoint (${params.sourceOutPoint}).`);
+      }
+      return await queueCommandAndWait("addFootageLayer", params, resolveBridgeTimeout(FOOTAGE_DEFAULT_TIMEOUT_MS));
+    } catch (error) {
+      return footageToolError("INTERNAL_ERROR", String(error));
+    }
+  }
+);
+
+server.tool(
+  "setLayerTimeRemap",
+  "Set Time Remap keyframes (comp time -> source time) on a footage or precomp layer for speed ramps. If this call enables Time Remap, AE's two default keyframes are removed and replaced by yours; if Time Remap was already enabled, your keys are merged (a key at an existing time replaces it). Waits up to 8 s for the result.",
+  {
+    ...LayerIdentifierSchema,
+    keyframes: z.array(z.object({
+      timeInSeconds: z.number().finite().describe("Comp time (s) of the keyframe."),
+      sourceTimeInSeconds: z.number().finite().min(0).describe("Source time (s) shown at that comp time; 0..source duration.")
+    })).min(1).describe("At least one keyframe.")
+  },
+  async (params) => {
+    try {
+      return await queueCommandAndWait("setLayerTimeRemap", params, resolveBridgeTimeout(FOOTAGE_DEFAULT_TIMEOUT_MS));
+    } catch (error) {
+      return footageToolError("INTERNAL_ERROR", String(error));
+    }
+  }
+);
+// --- END FOOTAGE TOOLS ---
 
 // Start the MCP server
 async function main() {
