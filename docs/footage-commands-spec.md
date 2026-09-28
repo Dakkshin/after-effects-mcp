@@ -30,8 +30,8 @@ Both `src/index.ts` and `src/scripts/mcp-bridge-auto.jsx` use **CRLF** line endi
 ### 1.1 Exact marker lines
 Each appears **exactly once**, on its own line, no leading whitespace (trailing `\r` allowed):
 ```
-// @pure-begin footage-timing
-// @pure-end footage-timing
+// PURE-BLOCK-BEGIN footage-timing
+// PURE-BLOCK-END footage-timing
 ```
 
 ### 1.2 Placement

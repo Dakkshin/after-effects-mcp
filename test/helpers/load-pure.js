@@ -2,8 +2,8 @@
 // isolated vm context that mimics ExtendScript's ES3 runtime (spec §11).
 //
 // The pure block is the text strictly between the two marker lines:
-//   // @pure-begin footage-timing
-//   // @pure-end footage-timing
+//   // PURE-BLOCK-BEGIN footage-timing
+//   // PURE-BLOCK-END footage-timing
 //
 // Test-only override: set AE_MCP_PURE_SOURCE to the path of another file containing the
 // same markers (used by QA to validate the test tables against a reference implementation).
@@ -18,8 +18,8 @@ export const REPO_ROOT = path.resolve(here, "..", "..");
 export const JSX_PATH = path.join(REPO_ROOT, "src", "scripts", "mcp-bridge-auto.jsx");
 export const INDEX_TS_PATH = path.join(REPO_ROOT, "src", "index.ts");
 
-export const MARKER_BEGIN = "// @pure-begin footage-timing";
-export const MARKER_END = "// @pure-end footage-timing";
+export const MARKER_BEGIN = "// PURE-BLOCK-BEGIN footage-timing";
+export const MARKER_END = "// PURE-BLOCK-END footage-timing";
 
 export const PURE_FUNCTION_NAMES = [
   "parseNumericInput",

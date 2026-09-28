@@ -1235,7 +1235,7 @@ function bridgeTestEffects(args) {
 }
 
 // --- Footage commands: pure timing logic (no AE API; unit-tested outside AE) ---
-// @pure-begin footage-timing
+// PURE-BLOCK-BEGIN footage-timing
 var FOOTAGE_TIMING_EPSILON = 0.001;
 var STILL_DEFAULT_DURATION = 5;
 
@@ -1594,7 +1594,7 @@ function planTimeRemapKeyframes(existingKeyTimes, keyframes, remapWasEnabled) {
         addedCount: addedCount
     };
 }
-// @pure-end footage-timing
+// PURE-BLOCK-END footage-timing
 
 // --- Footage commands: private AE helpers ---
 function _mcpNum(v) {

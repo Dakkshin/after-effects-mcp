@@ -1,5 +1,5 @@
 // Minimal After Effects DOM mock for behavioural tests of importFootage / addFootageLayer /
-// setLayerTimeRemap (spec §7). Loads the jsx text from `// @pure-begin footage-timing` up to
+// setLayerTimeRemap (spec §7). Loads the jsx text from `// PURE-BLOCK-BEGIN footage-timing` up to
 // `// JSON polyfill for ExtendScript`, plus the polyfill section itself, into an ES3 vm context
 // (native JSON removed, so the file's own polyfill is used exactly as in ExtendScript — it emits
 // NaN/Infinity literally, which is what the _mcpNum sanitiser must prevent).

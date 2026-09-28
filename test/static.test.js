@@ -81,8 +81,15 @@ describe("pure block — markers and placement (§1.1, §1.2)", () => {
   });
 
   test("marker text does not appear anywhere else (e.g. indented copies)", () => {
-    assert.equal(jsx.split("@pure-begin footage-timing").length - 1, 1);
-    assert.equal(jsx.split("@pure-end footage-timing").length - 1, 1);
+    assert.equal(jsx.split("PURE-BLOCK-BEGIN footage-timing").length - 1, 1);
+    assert.equal(jsx.split("PURE-BLOCK-END footage-timing").length - 1, 1);
+  });
+
+  test("no line comment starts with '@' (ExtendScript parses '//@…' / '// @…' as a preprocessor directive)", () => {
+    const offenders = jsxLines
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => /^\s*\/\/\s*@/.test(line));
+    assert.deepEqual(offenders, [], "directive-like comments make AE fail with 'Syntax error' when loading the panel");
   });
 
   test("pure block sits after bridgeTestEffects and before the JSON polyfill, followed by the commands", () => {
