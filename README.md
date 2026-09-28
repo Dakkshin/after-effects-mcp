@@ -16,6 +16,7 @@
   - [Core Composition Features](#core-composition-features)
   - [Layer Management](#layer-management)
   - [Animation Capabilities](#animation-capabilities)
+  - [Footage & Editing](#footage--editing)
 - [Setup Instructions](#setup-instructions)
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
@@ -25,10 +26,12 @@
   - [Creating Compositions](#creating-compositions)
   - [Working with Layers](#working-with-layers)
   - [Animation](#animation)
+  - [Footage Editing: Cut List Example](#footage-editing-cut-list-example)
 - [Available MCP Tools](#available-mcp-tools)
 - [For Developers](#for-developers)
   - [Project Structure](#project-structure)
   - [Building the Project](#building-the-project)
+  - [Running Tests](#running-tests)
   - [Contributing](#contributing)
 - [License](#license)
 
@@ -57,6 +60,14 @@
 - **Set keyframes** for layer properties (Position, Scale, Rotation, Opacity, etc.)
 - **Apply expressions** to layer properties for dynamic animations
 - **Batch set properties** across multiple layers at once
+
+### 🎞 Footage & Editing
+- **Import footage** (video, audio, stills) by absolute local path, optionally into a root-level Project panel folder (`importFootage`)
+- **Place trimmed clips** on a composition timeline: choose the source in/out range and the comp time where the clip starts (`addFootageLayer`)
+- **Frame-accurate timing**: layer times snap to the comp frame grid; stills default to 5 s
+- **Speed ramps** with Time Remap keyframes that map comp time to source time (`setLayerTimeRemap`)
+- **Structured results**: errors come back as `status: "error"` with a machine-readable `code`; non-fatal issues are listed in `warnings`
+- **Waits for After Effects**: these tools return the AE result directly (no separate `get-results` call unless AE is slow)
 
 ## ⚙️ Setup Instructions
 
@@ -197,6 +208,79 @@ You can animate layers with:
 - Create dynamic, procedural animations
 - Connect property values to each other
 
+### 🎞 Footage Editing: Cut List Example
+
+`importFootage`, `addFootageLayer` and `setLayerTimeRemap` let you assemble an edit from a pre-computed cut list: import the sources, place each shot trimmed to its source range, then retime shots with Time Remap. Example cut list for a 12 s, 25 fps comp called "Trailer" (created with `create-composition`):
+
+| Shot | Source file      | Source in → out (s) | Comp start (s) | Comp span (s) | Notes                                   |
+|------|------------------|---------------------|----------------|---------------|-----------------------------------------|
+| 1    | `interview.mp4`  | 12.0 → 15.0         | 0              | 0 – 3         |                                         |
+| 2    | `broll_city.mp4` | 3.0 → 7.0           | 3              | 3 – 7         | Speed ramp: 2× for 1 s, then slow motion |
+| 3    | `logo.png`       | still               | 7              | 7 – 12        | Stills default to 5 s; centered         |
+
+**1. Import the sources** with `importFootage`, one call per file (absolute local path; `folderName` is optional and is created at the project root if missing):
+```json
+{ "filePath": "D:/footage/interview.mp4", "folderName": "Sources" }
+```
+The result contains the new item's id; use it as `footageId` later (ids below are examples):
+```json
+{
+  "status": "success",
+  "message": "Footage imported successfully",
+  "footage": { "id": 12, "name": "interview.mp4", "width": 1920, "height": 1080, "duration": 42.5, "frameRate": 25, "isStill": false },
+  "alreadyInProject": false,
+  "existingItemIds": [],
+  "folder": { "id": 11, "name": "Sources", "created": true }
+}
+```
+Import `broll_city.mp4` (id 13) and `logo.png` (id 14) the same way.
+
+**2. Find the comp's `compIndex`.** `compIndex` is the 1-based position of the comp in the project item list, not the comp id, and it can change after imports or new folders. Re-read it right before placing shots: `run-script` with `{ "script": "getProjectInfo" }`, then `get-results`; `compIndex` = position of "Trailer" in `items` + 1. Here it is `1`.
+
+**3. Place the shots** with `addFootageLayer`. At `compStartTime` the layer shows the source frame at `sourceInPoint`, and it ends at `compStartTime + (sourceOutPoint - sourceInPoint)`:
+```json
+{ "compIndex": 1, "footageId": 12, "compStartTime": 0, "sourceInPoint": 12, "sourceOutPoint": 15 }
+```
+```json
+{ "compIndex": 1, "footageId": 13, "compStartTime": 3, "sourceInPoint": 3, "sourceOutPoint": 7 }
+```
+```json
+{ "compIndex": 1, "footageName": "logo.png", "compStartTime": 7, "position": [960, 540] }
+```
+Each result reports the new layer and the times After Effects actually applied, e.g. for shot 2:
+```json
+{
+  "status": "success",
+  "layer": { "index": 1, "name": "broll_city.mp4", "startTime": 0, "inPoint": 3, "outPoint": 7, "duration": 4 },
+  "computed": { "startTime": 0, "inPoint": 3, "outPoint": 7, "sourceInPoint": 3, "sourceOutPoint": 7 },
+  "warnings": []
+}
+```
+New layers go on top (index 1), so after shot 3 is placed, shot 2 is layer 2.
+
+**4. Speed-ramp shot 2** with `setLayerTimeRemap`. Each keyframe maps a comp time to the source time shown at that moment: source 3 → 5 s plays in 1 s (2×), then source 5 → 7 s stretches over 3 s (slow motion):
+```json
+{
+  "compIndex": 1,
+  "layerIndex": 2,
+  "keyframes": [
+    { "timeInSeconds": 3, "sourceTimeInSeconds": 3 },
+    { "timeInSeconds": 4, "sourceTimeInSeconds": 5 },
+    { "timeInSeconds": 7, "sourceTimeInSeconds": 7 }
+  ]
+}
+```
+The result lists every Time Remap keyframe on the layer after the call; the curve is visible in the Graph Editor.
+
+**Things to know**
+- **`compIndex`** is the position in the project item list (`app.project.item(i)`), not the comp id. After Effects appears to keep that list sorted by name, so indices may shift after `importFootage` or when a folder is created; re-read them with `getProjectInfo` (it lists the first 50 items).
+- **`footageId`** comes from the `importFootage` result (or from `getProjectInfo`). `footageName` works too, but fails with `AMBIGUOUS_FOOTAGE_NAME` if several footage items share the name.
+- **Defaults and tolerances:** `sourceInPoint` defaults to 0 and `sourceOutPoint` to the full source duration; stills default to 5 s and may be extended freely. A `sourceOutPoint` up to 1 ms past the end of the source is clamped; more is an `OUT_EXCEEDS_DURATION` error. Layer times snap to the comp frame grid, and `computed` vs `layer` in the result shows both.
+- **Time Remap:** if the call turns Time Remap on, After Effects' two automatic keyframes are removed and only yours remain. If Time Remap was already on, your keys are merged with the existing ones. A key within 1 ms of an existing key replaces it. Source times must be between 0 and the source duration.
+- **No de-duplication:** `importFootage` always creates a new project item; `alreadyInProject` and `existingItemIds` tell you whether the same file was already imported.
+- **Waiting:** these tools wait for After Effects (up to 20 s for `importFootage`, 8 s for the others). If AE has not answered in time you get a "Timed out … get-results" message rather than an error; the command is still queued, so call `get-results` before sending anything else.
+- **One command at a time:** the bridge uses a single command file, so send commands sequentially. A new command overwrites one that After Effects has not picked up yet.
+
 ## 🛠 Available MCP Tools
 
 | Command                     | Description                            |
@@ -215,6 +299,9 @@ You can animate layers with:
 | `duplicateLayer`            | Duplicate a layer                     |
 | `deleteLayer`               | Delete a layer                        |
 | `setLayerMask`              | Create/modify layer masks             |
+| `importFootage`             | Import a local video/audio/image file by absolute path (optional Project folder); returns footage id, size and duration |
+| `addFootageLayer`           | Place footage on a comp timeline, trimmed to a source in/out range, starting at a given comp time |
+| `setLayerTimeRemap`         | Set Time Remap keyframes (comp time → source time) for speed ramps |
 
 ## 👨‍💻 For Developers
 
@@ -223,6 +310,8 @@ You can animate layers with:
 - `src/index.ts`: MCP server implementation
 - `src/scripts/mcp-bridge-auto.jsx`: Main After Effects panel script
 - `install-bridge.js`: Script to install the panel in After Effects
+- `test/`: automated tests (`node:test`) and the manual After Effects smoke test checklist (`test/AE_SMOKE_TEST.md`)
+- `docs/footage-commands-spec.md`: interface contract for the footage commands
 
 ### 📦 Building the Project
 
@@ -233,6 +322,20 @@ yarn build
 ```
 
 **Note:** This project uses esbuild for fast builds, replacing the previous TypeScript compiler approach that could run out of memory on larger codebases.
+
+### 🧪 Running Tests
+
+```bash
+npm test
+```
+
+This builds the project first (`pretest`), then runs the `node:test` suites in `test/`: unit tests for the pure timing functions extracted from `mcp-bridge-auto.jsx` (run in an ES3-like sandbox), static checks of the bridge script and `src/index.ts`, and an MCP integration test against a fake bridge. No After Effects installation is needed.
+
+To check the footage commands in a real After Effects session, generate the media fixtures (requires `ffmpeg` on `PATH`) and follow `test/AE_SMOKE_TEST.md`:
+
+```bash
+node test/fixtures/generate-fixtures.js
+```
 
 ### 🤝 Contributing
 

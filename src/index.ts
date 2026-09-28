@@ -369,6 +369,17 @@ Available scripts:
 - setLayerExpression: Set an expression for a layer property
 - applyEffect: Apply an effect to a layer
 - applyEffectTemplate: Apply a predefined effect template to a layer
+- importFootage: Import a local video/audio/image file by absolute path (optional root-level folderName); returns footage id, name, width, height, duration
+- addFootageLayer: Place a footage item (footageId or footageName) on a comp timeline, trimmed to a source in/out range, starting at compStartTime
+- setLayerTimeRemap: Set Time Remap keyframes (comp time -> source time) on a footage or precomp layer for speed ramps
+
+Footage workflow (importFootage -> addFootageLayer -> setLayerTimeRemap):
+- These three are also dedicated MCP tools. They wait for the After Effects result (up to 20 s for importFootage, 8 s for the others). On timeout they return a "Timed out ... get-results" message (not an error): the command is still queued, so call \`get-results\` before sending the next command. Only one command runs at a time (there is a single command file); a new command overwrites one that has not been picked up yet.
+- importFootage {"filePath": "D:/footage/interview.mp4", "folderName": "Sources"}: always creates a new project item (no de-duplication); alreadyInProject / existingItemIds report earlier imports of the same file. Use footage.id from the result as footageId.
+- compIndex is the 1-based position of the comp in the project item list (app.project.item(i)), NOT the comp id. It may change after imports or new folders (AE appears to keep the list sorted by name), so re-read it right before use: run-script getProjectInfo, then get-results; compIndex = position in "items" + 1 (only the first 50 items are listed).
+- addFootageLayer {"compIndex": 1, "footageId": 12, "compStartTime": 2, "sourceInPoint": 4.5, "sourceOutPoint": 7.5}: at comp time 2 s the layer shows source time 4.5 s and it ends at 2 + (7.5 - 4.5) = 5 s. sourceInPoint defaults to 0, sourceOutPoint to the full source duration (stills: 5 s). Comp times snap to the comp frame grid; a sourceOutPoint up to 1 ms past the source end is clamped, more is an error. The layer is added on top (index 1), so existing layer indices shift down by one; use layer.index from the result.
+- setLayerTimeRemap {"compIndex": 1, "layerIndex": 1, "keyframes": [{"timeInSeconds": 2, "sourceTimeInSeconds": 4.5}, {"timeInSeconds": 3, "sourceTimeInSeconds": 6.5}, {"timeInSeconds": 5, "sourceTimeInSeconds": 7.5}]}: each key maps a comp time to a source time (0..source duration); this example plays 2x, then 0.5x. If the call turns Time Remap on, AE's two automatic keyframes are removed; if Time Remap was already on, your keys are merged with the existing ones. A key within 1 ms of an existing key replaces it.
+- Errors are JSON: {"status": "error", "code": "...", "message": "..."} (e.g. FILE_NOT_FOUND, COMP_NOT_FOUND, NOT_A_COMP, FOOTAGE_NOT_FOUND, AMBIGUOUS_FOOTAGE_NAME, OUT_EXCEEDS_DURATION, TIME_REMAP_NOT_SUPPORTED). Non-fatal issues are listed in "warnings".
 
 Effect Templates:
 - gaussian-blur: Simple Gaussian blur effect
@@ -838,6 +849,8 @@ server.tool(
         {
           type: "text",
           text: `# After Effects Effects Help
+
+For footage import, trimmed placement and Time Remap, see the get-help tool.
 
 ## Common Effect Match Names
 These are internal names used by After Effects that can be used with the \`effectMatchName\` parameter:
