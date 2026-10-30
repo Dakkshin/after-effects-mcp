@@ -1,11 +1,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { execSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { z } from "zod";
 import { fileURLToPath } from 'url';
+import {
+  clearResultsFile,
+  readResultsFromTempFile,
+  runBridgeCommand,
+  waitForBridgeResult,
+  writeCommandFile,
+} from "./bridge.js";
 
 // Create an MCP server
 const server = new McpServer({
@@ -19,126 +25,8 @@ const __dirname = path.dirname(__filename);
 
 // Define paths
 const SCRIPTS_DIR = path.join(__dirname, "scripts");
-const TEMP_DIR = path.join(__dirname, "temp");
 
-// Get the correct directory for AE bridge files
-// Use ~/Documents/ae-mcp-bridge for reliable cross-process access
-function getAETempDir(): string {
-  const homeDir = os.homedir();
-  const bridgeDir = path.join(homeDir, 'Documents', 'ae-mcp-bridge');
-  // Ensure the directory exists
-  if (!fs.existsSync(bridgeDir)) {
-    fs.mkdirSync(bridgeDir, { recursive: true });
-  }
-  return bridgeDir;
-}
-
-// Headless CLI execution has been removed. All interactions are routed through the Bridge panel.
-
-// Helper function to read results from After Effects temp file
-function readResultsFromTempFile(): string {
-  try {
-    const tempFilePath = path.join(getAETempDir(), 'ae_mcp_result.json');
-    
-    // Add debugging info
-    console.error(`Checking for results at: ${tempFilePath}`);
-    
-    if (fs.existsSync(tempFilePath)) {
-      // Get file stats to check modification time
-      const stats = fs.statSync(tempFilePath);
-      console.error(`Result file exists, last modified: ${stats.mtime.toISOString()}`);
-      
-      const content = fs.readFileSync(tempFilePath, 'utf8');
-      console.error(`Result file content length: ${content.length} bytes`);
-      
-      // If the result file is older than 30 seconds, warn the user
-      const thirtySecondsAgo = new Date(Date.now() - 30 * 1000);
-      if (stats.mtime < thirtySecondsAgo) {
-        console.error(`WARNING: Result file is older than 30 seconds. After Effects may not be updating results.`);
-        return JSON.stringify({ 
-          warning: "Result file appears to be stale (not recently updated).",
-          message: "This could indicate After Effects is not properly writing results or the MCP Bridge Auto panel isn't running.",
-          lastModified: stats.mtime.toISOString(),
-          originalContent: content
-        });
-      }
-      
-      return content;
-    } else {
-      console.error(`Result file not found at: ${tempFilePath}`);
-      return JSON.stringify({ error: "No results file found. Please run a script in After Effects first." });
-    }
-  } catch (error) {
-    console.error("Error reading results file:", error);
-    return JSON.stringify({ error: `Failed to read results: ${String(error)}` });
-  }
-}
-
-// Helper to wait for a fresh result produced by a specific command
-async function waitForBridgeResult(expectedCommand?: string, timeoutMs: number = 5000, pollMs: number = 250): Promise<string> {
-  const start = Date.now();
-  const resultPath = path.join(getAETempDir(), 'ae_mcp_result.json');
-  let lastSize = -1;
-
-  while (Date.now() - start < timeoutMs) {
-    if (fs.existsSync(resultPath)) {
-      try {
-        const content = fs.readFileSync(resultPath, 'utf8');
-        if (content && content.length > 0 && content.length !== lastSize) {
-          lastSize = content.length;
-          try {
-            const parsed = JSON.parse(content);
-            if (!expectedCommand || parsed._commandExecuted === expectedCommand) {
-              return content;
-            }
-          } catch {
-            // not JSON yet; continue polling
-          }
-        }
-      } catch {
-        // transient read error; continue polling
-      }
-    }
-    await new Promise(r => setTimeout(r, pollMs));
-  }
-  return JSON.stringify({ error: `Timed out waiting for bridge result${expectedCommand ? ` for command '${expectedCommand}'` : ''}.` });
-}
-
-// Helper function to write command to file
-function writeCommandFile(command: string, args: Record<string, any> = {}): void {
-  try {
-    const commandFile = path.join(getAETempDir(), 'ae_command.json');
-    const commandData = {
-      command,
-      args,
-      timestamp: new Date().toISOString(),
-      status: "pending"  // pending, running, completed, error
-    };
-    fs.writeFileSync(commandFile, JSON.stringify(commandData, null, 2));
-    console.error(`Command "${command}" written to ${commandFile}`);
-  } catch (error) {
-    console.error("Error writing command file:", error);
-  }
-}
-
-// Helper function to clear the results file to avoid stale cache
-function clearResultsFile(): void {
-  try {
-    const resultFile = path.join(getAETempDir(), 'ae_mcp_result.json');
-    
-    // Write a placeholder message to indicate the file is being reset
-    const resetData = {
-      status: "waiting",
-      message: "Waiting for new result from After Effects...",
-      timestamp: new Date().toISOString()
-    };
-    
-    fs.writeFileSync(resultFile, JSON.stringify(resetData, null, 2));
-    console.error(`Results file cleared at ${resultFile}`);
-  } catch (error) {
-    console.error("Error clearing results file:", error);
-  }
-}
+// All bridge file-IPC lives in ./bridge.ts so write/timeout failures surface as errors.
 
 // Add a resource to expose project compositions
 server.resource(
@@ -206,28 +94,14 @@ server.tool(
     }
 
     try {
-      // Clear any stale result data
-      clearResultsFile();
-      
-      // Write command to file for After Effects to pick up
-      writeCommandFile(script, parameters);
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Command to run "${script}" has been queued.\n` +
-                  `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
-                  `Use the "get-results" tool after a few seconds to check for results.`
-          }
-        ]
-      };
+      // Queue the command, then wait for this command's result.
+      return await runBridgeCommand(script, parameters);
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error queuing command: ${String(error)}`
+            text: `Error running script "${script}": ${String(error)}`
           }
         ],
         isError: true
@@ -361,7 +235,7 @@ Available scripts:
 - createTextLayer: Create a new text layer
 - createShapeLayer: Create a new shape layer
 - createSolidLayer: Create a new solid layer
-- setLayerProperties: Set properties for a layer
+- setLayerProperties: Set properties for a layer (an animated Position is left untouched unless replaceKeyframes is true)
 - setLayerKeyframe: Set a keyframe for a layer property
 - setLayerExpression: Set an expression for a layer property
 - applyEffect: Apply an effect to a layer
@@ -404,25 +278,13 @@ server.tool(
   },
   async (params) => {
     try {
-      // Write command to file for After Effects to pick up
-      writeCommandFile("createComposition", params);
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Command to create composition "${params.name}" has been queued.\n` +
-                  `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
-                  `Use the "get-results" tool after a few seconds to check for results.`
-          }
-        ]
-      };
+      return await runBridgeCommand("createComposition", params);
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error queuing composition creation: ${String(error)}`
+            text: `Error creating composition "${params.name}": ${String(error)}`
           }
         ],
         isError: true
@@ -455,24 +317,13 @@ server.tool(
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("setLayerKeyframe", parameters);
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Command to set keyframe for "${parameters.propertyName}" on layer ${parameters.layerIndex} in comp ${parameters.compIndex} has been queued.\n` +
-                  `Use the "get-results" tool after a few seconds to check for confirmation.`
-          }
-        ]
-      };
+      return await runBridgeCommand("setLayerKeyframe", parameters);
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error queuing setLayerKeyframe command: ${String(error)}`
+            text: `Error setting keyframe for "${parameters.propertyName}" on layer ${parameters.layerIndex}: ${String(error)}`
           }
         ],
         isError: true
@@ -492,24 +343,13 @@ server.tool(
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("setLayerExpression", parameters);
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Command to set expression for "${parameters.propertyName}" on layer ${parameters.layerIndex} in comp ${parameters.compIndex} has been queued.\n` +
-                  `Use the "get-results" tool after a few seconds to check for confirmation.`
-          }
-        ]
-      };
+      return await runBridgeCommand("setLayerExpression", parameters);
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error queuing setLayerExpression command: ${String(error)}`
+            text: `Error setting expression for "${parameters.propertyName}" on layer ${parameters.layerIndex}: ${String(error)}`
           }
         ],
         isError: true
@@ -651,24 +491,13 @@ server.tool(
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("applyEffect", parameters);
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Command to apply effect to layer ${parameters.layerIndex} in composition ${parameters.compIndex} has been queued.\n` +
-                  `Use the "get-results" tool after a few seconds to check for confirmation.`
-          }
-        ]
-      };
+      return await runBridgeCommand("applyEffect", parameters);
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error queuing apply-effect command: ${String(error)}`
+            text: `Error applying effect to layer ${parameters.layerIndex} in composition ${parameters.compIndex}: ${String(error)}`
           }
         ],
         isError: true
@@ -699,24 +528,13 @@ server.tool(
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("applyEffectTemplate", parameters);
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Command to apply effect template '${parameters.templateName}' to layer ${parameters.layerIndex} in composition ${parameters.compIndex} has been queued.\n` +
-                  `Use the "get-results" tool after a few seconds to check for confirmation.`
-          }
-        ]
-      };
+      return await runBridgeCommand("applyEffectTemplate", parameters);
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error queuing apply-effect-template command: ${String(error)}`
+            text: `Error applying effect template '${parameters.templateName}' to layer ${parameters.layerIndex}: ${String(error)}`
           }
         ],
         isError: true
@@ -740,23 +558,7 @@ server.tool(
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("applyEffect", parameters);
-      
-      // Wait a bit for After Effects to process the command
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Get the results
-      const result = readResultsFromTempFile();
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: result
-          }
-        ]
-      };
+      return await runBridgeCommand("applyEffect", parameters);
     } catch (error) {
       return {
         content: [
@@ -793,23 +595,7 @@ server.tool(
   },
   async (parameters) => {
     try {
-      // Queue the command for After Effects
-      writeCommandFile("applyEffectTemplate", parameters);
-      
-      // Wait a bit for After Effects to process the command
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Get the results
-      const result = readResultsFromTempFile();
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: result
-          }
-        ]
-      };
+      return await runBridgeCommand("applyEffectTemplate", parameters);
     } catch (error) {
       return {
         content: [
@@ -916,28 +702,13 @@ server.tool(
   {},
   async () => {
     try {
-      // Clear any stale result data
-      clearResultsFile();
-      
-      // Write command to file for After Effects to pick up
-      writeCommandFile("bridgeTestEffects", {});
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Bridge test effects command has been queued.\n` +
-                  `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
-                  `Use the "get-results" tool after a few seconds to check for the test results.`
-          }
-        ]
-      };
+      return await runBridgeCommand("bridgeTestEffects", {});
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error queuing bridge test command: ${String(error)}`
+            text: `Error running bridge test: ${String(error)}`
           }
         ],
         isError: true
@@ -950,7 +721,6 @@ server.tool(
 async function main() {
   console.error("After Effects MCP Server starting...");
   console.error(`Scripts directory: ${SCRIPTS_DIR}`);
-  console.error(`Temp directory: ${TEMP_DIR}`);
   
   const transport = new StdioServerTransport();
   await server.connect(transport);

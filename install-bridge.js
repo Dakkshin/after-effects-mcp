@@ -1,6 +1,5 @@
 // install-bridge.js
 // Script to install the After Effects MCP Bridge to the ScriptUI Panels folder
-import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -78,26 +77,14 @@ if (!fs.existsSync(destinationFolder)) {
   }
 }
 
-// Copy the script
+// Copy the script.
+// No shell elevation: the previous version shelled out to `sudo cp` and to an
+// elevated PowerShell `Start-Process -Command` with interpolated paths, which is
+// command injection via the install path. A plain copy either works or fails
+// loudly, and the operator re-runs the installer from an elevated shell.
 try {
   console.log(`Installing bridge script to ${destinationScript}...`);
-
-  if (isMac) {
-    // On Mac, try direct copy first, then sudo if needed
-    try {
-      fs.copyFileSync(sourceScript, destinationScript);
-    } catch {
-      // If direct copy fails, try with sudo
-      execSync(`sudo cp "${sourceScript}" "${destinationScript}"`, { stdio: 'inherit' });
-    }
-  } else {
-    // Try to use PowerShell with elevated privileges on Windows
-    const command = `
-      Start-Process PowerShell -Verb RunAs -ArgumentList "-Command Copy-Item -Path '${sourceScript.replace(/\\/g, '\\\\')}' -Destination '${destinationScript.replace(/\\/g, '\\\\')}' -Force"
-    `;
-    execSync(`powershell -Command "${command}"`, { stdio: 'inherit' });
-  }
-
+  fs.copyFileSync(sourceScript, destinationScript);
   console.log('Bridge script installed successfully!');
   console.log('\nImportant next steps:');
   console.log('1. Open After Effects');
@@ -111,13 +98,18 @@ try {
   console.log('5. Open the bridge panel: Window > mcp-bridge-auto.jsx');
 } catch (error) {
   console.error(`Error installing script: ${error.message}`);
-  console.error('\nPlease try manual installation:');
+  if (error.code === 'EPERM' || error.code === 'EACCES') {
+    console.error('\nPermission denied writing into the After Effects scripts folder.');
+    console.error('Re-run this installer from an elevated shell:');
+    if (isMac) {
+      console.error(`  sudo node "${process.argv[1]}"`);
+    } else {
+      console.error('  Open Terminal/PowerShell as Administrator, then:');
+      console.error(`  node "${process.argv[1]}"`);
+    }
+  }
+  console.error('\nOr copy manually:');
   console.error(`1. Copy: ${sourceScript}`);
   console.error(`2. To: ${destinationScript}`);
-  if (isMac) {
-    console.error('3. You may need to run with sudo or copy manually via Finder');
-  } else {
-    console.error('3. You may need to run as administrator or use File Explorer with admin rights');
-  }
   process.exit(1);
 } 

@@ -464,6 +464,8 @@ function setLayerProperties(args) {
         var opacity = args.opacity; 
         var startTime = args.startTime; 
         var duration = args.duration; 
+        // BL-007: existing Position animation is only replaced on explicit request.
+        var replaceKeyframes = args.replaceKeyframes === true;
 
         // Text Specific Properties
         var textContent = args.text; // New: text content
@@ -495,6 +497,8 @@ function setLayerProperties(args) {
         if (!layer) { throw new Error("Layer not found: " + (layerName || "index " + layerIndex)); }
         
         var changedProperties = [];
+        var removedKeyframes = 0;
+        var skippedProperties = [];
         var textDocumentChanged = false;
         var textProp = null;
         var textDocument = null;
@@ -607,9 +611,14 @@ function setLayerProperties(args) {
         if (threeDLayer !== undefined && threeDLayer !== null) { layer.threeDLayer = !!threeDLayer; changedProperties.push("threeDLayer"); }
         if (position !== undefined && position !== null) {
             var posProp = layer.property("Position");
-            if (posProp.numKeys > 0) { while (posProp.numKeys > 0) { posProp.removeKey(1); } }
-            posProp.setValue(position);
-            changedProperties.push("position");
+            if (posProp.numKeys > 0 && !replaceKeyframes) {
+                skippedProperties.push("position (" + posProp.numKeys + " keyframes kept; pass replaceKeyframes: true to replace them)");
+            } else {
+                removedKeyframes += posProp.numKeys;
+                while (posProp.numKeys > 0) { posProp.removeKey(1); }
+                posProp.setValue(position);
+                changedProperties.push("position");
+            }
         }
         if (scale !== undefined && scale !== null) { layer.property("Scale").setValue(scale); changedProperties.push("scale"); }
         if (rotation !== undefined && rotation !== null) {
@@ -640,7 +649,9 @@ function setLayerProperties(args) {
             opacity: layer.property("Opacity").value,
             inPoint: layer.inPoint,
             outPoint: layer.outPoint,
-            changedProperties: changedProperties
+            changedProperties: changedProperties,
+            removedKeyframes: removedKeyframes,
+            skippedProperties: skippedProperties
         };
         // Add text properties to the return object if it was a text layer
         if (layer instanceof TextLayer && textDocument) {
@@ -701,14 +712,20 @@ function batchSetLayerProperties(args) {
             if (!layer) { results.push({ layerIndex: op.layerIndex, layerName: op.layerName, status: "error", message: "Layer not found" }); continue; }
 
             var changed = [];
+            var removedKeyframes = 0;
+            var skipped = [];
+            var replaceKeyframes = (op.replaceKeyframes !== undefined && op.replaceKeyframes !== null) ? op.replaceKeyframes === true : (args.replaceKeyframes === true);
             if (op.threeDLayer !== undefined && op.threeDLayer !== null) { layer.threeDLayer = !!op.threeDLayer; changed.push("threeDLayer"); }
             if (op.position !== undefined && op.position !== null) {
                 var posProp = layer.property("Position");
-                if (posProp.numKeys > 0) {
+                if (posProp.numKeys > 0 && !replaceKeyframes) {
+                    skipped.push("position (" + posProp.numKeys + " keyframes kept; pass replaceKeyframes: true to replace them)");
+                } else {
+                    removedKeyframes += posProp.numKeys;
                     while (posProp.numKeys > 0) { posProp.removeKey(1); }
+                    posProp.setValue(op.position);
+                    changed.push("position");
                 }
-                posProp.setValue(op.position);
-                changed.push("position");
             }
             if (op.scale !== undefined && op.scale !== null) { layer.property("Scale").setValue(op.scale); changed.push("scale"); }
             if (op.rotation !== undefined && op.rotation !== null) {
@@ -730,7 +747,9 @@ function batchSetLayerProperties(args) {
                 status: "success",
                 threeDLayer: layer.threeDLayer,
                 position: layer.property("Position").value,
-                changedProperties: changed
+                changedProperties: changed,
+                removedKeyframes: removedKeyframes,
+                skippedProperties: skipped
             });
         }
 
@@ -914,7 +933,7 @@ function applyEffect(args) {
         }
         // Apply effect by match name (more reliable method)
         else if (effectMatchName) {
-            var effect = layer.Effects.addProperty(effectMatchName);
+            var effect = layer.property("ADBE Effect Parade").addProperty(effectMatchName);
             effectResult = {
                 type: "effect",
                 name: effect.name,
@@ -928,7 +947,7 @@ function applyEffect(args) {
         // Apply effect by display name
         else {
             // Get the effect from the Effect menu
-            var effect = layer.Effects.addProperty(effectName);
+            var effect = layer.property("ADBE Effect Parade").addProperty(effectName);
             effectResult = {
                 type: "effect",
                 name: effect.name,
@@ -1137,7 +1156,7 @@ function applyEffectTemplate(args) {
         // Apply single effect or multiple effects based on template structure
         if (template.effectMatchName) {
             // Single effect template
-            var effect = layer.Effects.addProperty(template.effectMatchName);
+            var effect = layer.property("ADBE Effect Parade").addProperty(template.effectMatchName);
             
             // Apply settings
             for (var propName in template.settings) {
@@ -1159,7 +1178,7 @@ function applyEffectTemplate(args) {
             // Multiple effects template
             for (var i = 0; i < template.effects.length; i++) {
                 var effectData = template.effects[i];
-                var effect = layer.Effects.addProperty(effectData.effectMatchName);
+                var effect = layer.property("ADBE Effect Parade").addProperty(effectData.effectMatchName);
                 
                 // Apply settings
                 for (var propName in effectData.settings) {
@@ -1239,9 +1258,176 @@ if (typeof JSON === "undefined") {
     JSON = {};
 }
 if (typeof JSON.parse !== "function") {
+    // Strict recursive-descent JSON parser (ES3). This replaces an eval()-based
+    // fallback: the bridge command/result files live in a user-writable folder
+    // (~/Documents/ae-mcp-bridge), so eval() turned a writable file into
+    // arbitrary After Effects script execution. This parser accepts JSON
+    // grammar only and throws on anything else.
     JSON.parse = function (text) {
-        // Safe-ish fallback for trusted input (our own command file)
-        return eval("(" + text + ")");
+        var src = String(text);
+        var at = 0;
+
+        function fail(msg) {
+            throw new Error("JSON.parse: " + msg + " at position " + at);
+        }
+        function ws() {
+            while (at < src.length) {
+                var c = src.charAt(at);
+                if (c === " " || c === "\t" || c === "\n" || c === "\r") {
+                    at++;
+                } else {
+                    break;
+                }
+            }
+        }
+        function expect(ch) {
+            ws();
+            if (src.charAt(at) !== ch) {
+                fail("expected '" + ch + "'");
+            }
+            at++;
+        }
+        function parseString() {
+            ws();
+            if (src.charAt(at) !== '"') {
+                fail("expected string");
+            }
+            at++;
+            var out = "";
+            while (at < src.length) {
+                var c = src.charAt(at);
+                at++;
+                if (c === '"') {
+                    return out;
+                }
+                if (c !== "\\") {
+                    out += c;
+                    continue;
+                }
+                var esc = src.charAt(at);
+                at++;
+                if (esc === '"') { out += '"'; }
+                else if (esc === "\\") { out += "\\"; }
+                else if (esc === "/") { out += "/"; }
+                else if (esc === "b") { out += "\b"; }
+                else if (esc === "f") { out += "\f"; }
+                else if (esc === "n") { out += "\n"; }
+                else if (esc === "r") { out += "\r"; }
+                else if (esc === "t") { out += "\t"; }
+                else if (esc === "u") {
+                    var hex = src.substr(at, 4);
+                    if (hex.length !== 4 || /[^0-9a-fA-F]/.test(hex)) {
+                        fail("bad unicode escape");
+                    }
+                    out += String.fromCharCode(parseInt(hex, 16));
+                    at += 4;
+                } else {
+                    fail("bad escape '\\" + esc + "'");
+                }
+            }
+            fail("unterminated string");
+        }
+        function isDigit(c) {
+            return c >= "0" && c <= "9";
+        }
+        function parseNumber() {
+            ws();
+            var startedAt = at;
+            if (src.charAt(at) === "-") {
+                at++;
+            }
+            while (at < src.length && isDigit(src.charAt(at))) {
+                at++;
+            }
+            if (src.charAt(at) === ".") {
+                at++;
+                while (at < src.length && isDigit(src.charAt(at))) {
+                    at++;
+                }
+            }
+            if (src.charAt(at) === "e" || src.charAt(at) === "E") {
+                at++;
+                if (src.charAt(at) === "+" || src.charAt(at) === "-") {
+                    at++;
+                }
+                while (at < src.length && isDigit(src.charAt(at))) {
+                    at++;
+                }
+            }
+            var raw = src.substring(startedAt, at);
+            var num = Number(raw);
+            if (!isFinite(num)) {
+                fail("bad number '" + raw + "'");
+            }
+            return num;
+        }
+        function parseObject() {
+            var obj = {};
+            at++;
+            ws();
+            if (src.charAt(at) === "}") {
+                at++;
+                return obj;
+            }
+            while (at < src.length) {
+                var key = parseString();
+                expect(":");
+                obj[key] = parseValue();
+                ws();
+                var c = src.charAt(at);
+                at++;
+                if (c === "}") {
+                    return obj;
+                }
+                if (c !== ",") {
+                    fail("expected ',' or '}'");
+                }
+                ws();
+            }
+            fail("unterminated object");
+        }
+        function parseArray() {
+            var arr = [];
+            at++;
+            ws();
+            if (src.charAt(at) === "]") {
+                at++;
+                return arr;
+            }
+            while (at < src.length) {
+                arr.push(parseValue());
+                ws();
+                var c = src.charAt(at);
+                at++;
+                if (c === "]") {
+                    return arr;
+                }
+                if (c !== ",") {
+                    fail("expected ',' or ']'");
+                }
+                ws();
+            }
+            fail("unterminated array");
+        }
+        function parseValue() {
+            ws();
+            var c = src.charAt(at);
+            if (c === "{") { return parseObject(); }
+            if (c === "[") { return parseArray(); }
+            if (c === '"') { return parseString(); }
+            if (c === "-" || isDigit(c)) { return parseNumber(); }
+            if (src.substr(at, 4) === "true") { at += 4; return true; }
+            if (src.substr(at, 5) === "false") { at += 5; return false; }
+            if (src.substr(at, 4) === "null") { at += 4; return null; }
+            fail("unexpected '" + c + "'");
+        }
+
+        var value = parseValue();
+        ws();
+        if (at !== src.length) {
+            fail("trailing content");
+        }
+        return value;
     };
 }
 if (typeof JSON.stringify !== "function") {
@@ -1726,15 +1912,16 @@ function checkForCommands() {
             commandFile.close();
             
             if (content) {
-                var commandData = (typeof JSON !== "undefined" && JSON.parse)
-                    ? JSON.parse(content)
-                    : eval("(" + content + ")");
-                
-                // Only execute pending commands
-                if (commandData.status === "pending") {
+                // JSON.parse is guaranteed here: the polyfill above installs a
+                // strict parser when the host has none. Never eval command data.
+                var commandData = JSON.parse(content);
+
+                if (!commandData || typeof commandData.command !== "string") {
+                    logToPanel("Ignoring malformed command file (no command name)");
+                } else if (commandData.status === "pending") {
                     // Update status to running
                     updateCommandStatus("running");
-                    
+
                     // Execute the command
                     executeCommand(commandData.command, commandData.args || {});
                 }
