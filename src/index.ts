@@ -25,7 +25,6 @@ const __dirname = path.dirname(__filename);
 
 // Define paths
 const SCRIPTS_DIR = path.join(__dirname, "scripts");
-const TEMP_DIR = path.join(__dirname, "temp");
 
 // All bridge file-IPC lives in ./bridge.ts so write/timeout failures surface as errors.
 
@@ -722,7 +721,6 @@ server.tool(
 async function main() {
   console.error("After Effects MCP Server starting...");
   console.error(`Scripts directory: ${SCRIPTS_DIR}`);
-  console.error(`Temp directory: ${TEMP_DIR}`);
   
   const transport = new StdioServerTransport();
   await server.connect(transport);

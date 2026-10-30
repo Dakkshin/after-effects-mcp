@@ -142,12 +142,12 @@ Deferred work for this project, things worth doing **later**, not now. Nothing h
 
 ### BL-015: Unused dependency and dead code
 - **Area:** general
-- **Status:** open
+- **Status:** done
 - **Added:** 2026-10-30 by agent
 - **Problem:** `node-fetch` is a runtime dependency that is never imported (Node 18+ has global `fetch`); `execSync` is imported unused in `src/index.ts` and `install-bridge.js`, and `TEMP_DIR` is only logged. Dead code invites "temporary" shell-outs and misleads readers.
 - **Files:** `package.json`, `src/index.ts:3`, `src/index.ts:22`
 - **Approach:** `npm uninstall node-fetch`; delete the unused import and constant.
-- **Partial fix:** 2026-10-30 — the `copyfiles` devDependency (used only to copy `src/scripts` into `build/`) is gone, replaced by `node -e "require('node:fs').cpSync(...)"` in the `build` script. Still open for `node-fetch`, the unused `execSync` import and `TEMP_DIR`.
+- **Resolution:** 2026-10-30 — `node-fetch` uninstalled (`removed 6 packages`), `TEMP_DIR` and its log line deleted from `src/index.ts`, `copyfiles` replaced by `node -e "require('node:fs').cpSync(...)"` in the `build` script. `execSync` needed no edit: it was already gone from both `src/index.ts` and `install-bridge.js` by the time this item was picked up (BL-003 rewrote the installer around `fs.copyFileSync`). No `node-fetch`/`execSync` references remain in `src/` or `install-bridge.js`. Gates: `npm run build` 24.1kb, `npm test` 12/12.
 
 ### BL-016: Loose version ranges and a postinstall build with no type-check
 - **Area:** tooling
