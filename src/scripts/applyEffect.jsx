@@ -47,7 +47,7 @@ function applyEffect(args) {
         }
         // Apply effect by match name (more reliable method)
         else if (effectMatchName) {
-            var effect = layer.Effects.addProperty(effectMatchName);
+            var effect = layer.property("ADBE Effect Parade").addProperty(effectMatchName);
             effectResult = {
                 type: "effect",
                 name: effect.name,
@@ -61,7 +61,7 @@ function applyEffect(args) {
         // Apply effect by display name
         else {
             // Get the effect from the Effect menu
-            var effect = layer.Effects.addProperty(effectName);
+            var effect = layer.property("ADBE Effect Parade").addProperty(effectName);
             effectResult = {
                 type: "effect",
                 name: effect.name,

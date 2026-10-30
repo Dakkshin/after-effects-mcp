@@ -58,6 +58,13 @@ manual_animation_test.jsx
 
 # Logs
 logs
+
+# Planning docs are tracked: the global excludes file ignores dot-dirs (.*),
+# and a repo-level negation outranks it — but git will not descend into an
+# ignored directory, so both the directory and its contents need un-ignoring.
+!.planning/
+!.planning/**
+
 *.log
 npm-debug.log*
 yarn-debug.log*

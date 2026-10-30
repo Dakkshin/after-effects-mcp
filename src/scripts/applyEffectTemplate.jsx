@@ -135,7 +135,7 @@ function applyEffectTemplate(args) {
         // Apply single effect or multiple effects based on template structure
         if (template.effectMatchName) {
             // Single effect template
-            var effect = layer.Effects.addProperty(template.effectMatchName);
+            var effect = layer.property("ADBE Effect Parade").addProperty(template.effectMatchName);
             
             // Apply settings
             for (var propName in template.settings) {
@@ -157,7 +157,7 @@ function applyEffectTemplate(args) {
             // Multiple effects template
             for (var i = 0; i < template.effects.length; i++) {
                 var effectData = template.effects[i];
-                var effect = layer.Effects.addProperty(effectData.effectMatchName);
+                var effect = layer.property("ADBE Effect Parade").addProperty(effectData.effectMatchName);
                 
                 // Apply settings
                 for (var propName in effectData.settings) {
